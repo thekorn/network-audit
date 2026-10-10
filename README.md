@@ -7,8 +7,19 @@ sends ten GET requests per batch and an Android WebView loading BUNTE.
 
 ## Audit the sample
 
-On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host**, enable the
-declared emulator in the ignored `devenv.local.nix` (not in an Amp orb):
+On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host** (not in an Amp
+orb), run the audit task from the repository root:
+
+```bash
+devenv tasks run network-audit --input app=sample-app
+```
+
+This selects `network-audit:audit` and enables the emulator for this run only.
+The required `app` input is a Flutter project path, relative to the repository
+root or absolute. Quote the input if the path contains spaces, for example
+`--input 'app=../my app'`. Add `--show-output` to display the task's output.
+
+Alternatively, enable the declared emulator in the ignored `devenv.local.nix`:
 
 ```nix
 { androidEmulator.enable = true; }

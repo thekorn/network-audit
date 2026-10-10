@@ -103,8 +103,7 @@ APK, and opens it in a fresh emulator. Leave the terminal running while you use
 the app.
 
 The illustrations below use earlier native Android captures, not one continuous
-recorded journey. The report examples use a separate, single-batch session; see
-the [media notes](#about-the-demo-media) for provenance.
+recorded journey. The report examples use a separate, single-batch session.
 
 ### First, follow the ten product requests
 
@@ -317,19 +316,3 @@ conclusion.
 Start small: launch the sample with `nix run`, refresh the product feed once, open
 the WebView, and stop the capture. The useful result is not just a list of URLs.
 It is a way to connect what you did in the app with what the network actually saw.
-
-## About the demo media
-
-The Products and BUNTE stills are earlier native Android captures from the
-project's Linux emulator runner; their original source revisions were not
-recorded. The report media uses a separate saved session started on
-2026-10-10 at 15:53:46 UTC, identified as `dev.thekorn.network_audit_sample`, with
-exactly one successful GET for each of `/products/1` through `/products/10`.
-
-The report was regenerated with `network-audit-core` at
-[this revision](https://github.com/thekorn/network-audit/commit/952e8daa9f62008f876ffa4e19828da3c967224e)
-and its filtering and detail views were exercised in Chromium. The screenshots
-and clip were checked for visible sensitive data; raw captures are not included.
-A fresh end-to-end emulator run for this article was blocked by the runner's
-free-disk preflight (6.91 GiB available, 8 GiB required). The media is not evidence
-that the current full Nix command or bundled browsing scenario completed anew.

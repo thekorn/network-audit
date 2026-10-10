@@ -64,11 +64,12 @@ install_devenv() {
 prepare_dependencies() {
   devenv --quiet shell bash -euc '
     flutter --version
-    if [[ -f pubspec.yaml ]]; then
-      if [[ ! -f pubspec.lock ]]; then
-        echo "Commit pubspec.lock before installing application dependencies in setup." >&2
+    if [[ -f sample-app/pubspec.yaml ]]; then
+      if [[ ! -f sample-app/pubspec.lock ]]; then
+        echo "Commit sample-app/pubspec.lock before installing application dependencies in setup." >&2
         exit 1
       fi
+      cd sample-app
       flutter pub get --enforce-lockfile
     fi
   '

@@ -1,7 +1,8 @@
 # network-audit
 
 Flutter/Android development with Nix and [devenv](https://devenv.sh).
-This repository currently contains the development environment, not an application.
+The [sample app](sample-app/README.md) has a native DummyJSON product feed that
+sends ten GET requests per batch and an Android WebView loading BUNTE.
 
 ## Toolchain
 
@@ -48,7 +49,7 @@ or a real Android device. A browser/mobile viewport is not an Android emulator.
 `.agents/setup` installs checksum-verified Nix 2.35.2 in single-user mode (no
 daemon), installs devenv from the locked nixpkgs revision, and realizes the full
 Flutter/Android build environment. It also runs `flutter pub get --enforce-lockfile`
-once a root-level `pubspec.yaml` and committed `pubspec.lock` exist. It never
+using `sample-app/pubspec.yaml` and its committed `pubspec.lock`. It never
 updates lockfiles automatically, installs emulator images, creates AVDs, or
 starts servers. The orb's single-user Nix disables build sandboxing inside the
 already isolated orb; this is not configuration for a shared Nix machine.
@@ -57,8 +58,7 @@ Amp can snapshot the Nix store, devenv environment and dependency caches after a
 successful setup, so later orbs reuse them. Exact snapshots skip setup; repeated
 setup on a warm filesystem converges without reinstalling the packages.
 The first cold setup still needs to download the SDKs. Gradle/Maven dependencies
-are application-specific and are downloaded on the first APK build; this empty
-repository has no Gradle project to prewarm yet.
+are application-specific and are downloaded on the first APK build.
 
 A repository-scoped, guarded Bash login hook exports the **whole** devenv
 environment into new Amp shells and future supervised service shells, including
@@ -74,7 +74,7 @@ To verify or repair this orb manually:
 devenv test
 ```
 
-No app server is configured yet. When one exists, declare it in
+The Android sample needs no app server. If one is added, declare it in
 `.amp/services.yaml` and use `amp orb services ensure`; do not start long-lived
 services from setup or resume. Do not commit credentials, ADB pairing keys,
 generated APKs, or local environment state.
@@ -103,15 +103,15 @@ avdmanager create avd --name network-audit \
 emulator -avd network-audit
 ```
 
-In a second devenv shell, create a starter app if needed, then run it:
+In a second devenv shell, run the sample app:
 
 ```bash
-flutter create --platforms=android --project-name network_audit .
-flutter pub get
+cd sample-app
+flutter pub get --enforce-lockfile
 flutter devices
 flutter run -d <device-id>
 ```
 
-For an existing app, skip `flutter create`. Build without a device using
-`flutter build apk --debug`; run unit/widget tests with `flutter test`.
-No native emulator run is possible until a suitable host or device is connected.
+From `sample-app`, build without a device using `flutter build apk --debug`;
+run static checks with `flutter analyze` and unit/widget tests with `flutter test`.
+Use the `thekorn-amp-runner` runner for native emulator verification in Amp.

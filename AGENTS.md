@@ -12,5 +12,8 @@
 - Orbs have no KVM: never enable `androidEmulator.enable`, install emulator
   images, create AVDs, or start an Android emulator in an orb. Native device
   verification needs a connected KVM-capable host/runner or Android device.
+- Whenever an Android emulator is needed, use the `thekorn-amp-runner` runner.
+  If it is unavailable, report the blocker rather than trying to run an emulator
+  in an orb.
 - Keep `.agents/resume` fast and free of package installs. Long-lived services
   belong in `.amp/services.yaml`, not lifecycle hooks.

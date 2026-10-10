@@ -25,6 +25,7 @@ from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
+from scenario import run_scenario, validate_scenario
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -282,6 +283,141 @@ class EmulatorOptionsTest(unittest.TestCase):
                 self.assertTrue(
                     parser().parse_args(["sample-app", "--headless"]).headless
                 )
+
+
+@unittest.skipUnless(shutil.which("mitmdump"), "mitmdump is supplied by devenv")
+class ScenarioAuditTest(unittest.TestCase):
+    def test_completion_failure_and_interrupt_always_emit_report(self):
+        # Exercise real proxy/report IO; Android and scenario outcomes are the
+        # boundaries here. Native acceptance covers the actual Mobilewright UI.
+        for outcome, state, exit_code in (
+            (None, "scenario completed", 0),
+            (
+                RuntimeError("Scenario exited with status 7; see scenario.log"),
+                "failed",
+                1,
+            ),
+            (KeyboardInterrupt(), "interrupted by user", 130),
+        ):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                apk = root / "sample.apk"
+                apk.touch()
+                scenario = root / "browse.mjs"
+                scenario.write_text("export default async function () {}\n")
+                args = parser().parse_args(
+                    [
+                        str(apk),
+                        "--domain",
+                        "localhost",
+                        "--scenario",
+                        str(scenario),
+                        "--output",
+                        str(root / "runs"),
+                    ]
+                )
+                output = StringIO()
+                with (
+                    patch("cli.validate_scenario", return_value=scenario),
+                    patch("cli.shutil.which", return_value="available"),
+                    patch("cli.check_emulator", return_value="test-image"),
+                    patch("cli.apk_identity", return_value=("test.app", "Main")),
+                    patch("cli.Emulator") as emulator,
+                    patch("cli.run_scenario", side_effect=outcome),
+                    redirect_stdout(output),
+                ):
+                    emulator.return_value.serial = "emulator-5580"
+                    emulator.return_value.foreground.return_value = True
+                    if exit_code == 1:
+                        with self.assertRaisesRegex(RuntimeError, "status 7"):
+                            audit(args)
+                    else:
+                        self.assertEqual(audit(args), exit_code)
+                (session,) = (root / "runs").iterdir()
+                metadata = json.loads((session / "session.json").read_text())
+                self.assertEqual(metadata["state"], state)
+                self.assertEqual(metadata["scenario"], str(scenario))
+                self.assertEqual(metadata["device"], "emulator-5580")
+                self.assertIn(state, (session / "report.html").read_text())
+                self.assertIn(
+                    f"Report: {(session / 'report.html').resolve()}",
+                    output.getvalue().splitlines(),
+                )
+
+
+class ScenarioProcessTest(unittest.TestCase):
+    def test_invalid_modules_fail_before_connecting_to_a_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            module = session / "invalid scenario.mjs"
+            with self.assertRaisesRegex(ValueError, "existing .mjs"):
+                validate_scenario(module)
+            module.write_text("export default async function ( {\n")
+            with self.assertRaisesRegex(RuntimeError, "SyntaxError"):
+                validate_scenario(module)
+            module.write_text("export const wrong = 1;\n")
+            self.assertEqual(validate_scenario(module), module.resolve())
+            with self.assertRaisesRegex(RuntimeError, "status 1"):
+                run_scenario(
+                    module,
+                    serial="not-a-device",
+                    device_id="test-avd",
+                    package="test.app",
+                    session=session,
+                    timeout=10,
+                    check_running=lambda: None,
+                )
+            self.assertIn(
+                "must export default async function",
+                (session / "scenario.log").read_text(),
+            )
+
+    def test_timeout_stops_a_modules_child_process_too(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            module = session / "hanging scenario.mjs"
+            # Hang at module load, before discovery; the child ignores SIGTERM
+            # so this checks forced process-group cleanup, not just Node exit.
+            module.write_text("""
+import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+const child = spawn(process.execPath, ['-e',
+  'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)']);
+writeFileSync(new URL('./child.pid', import.meta.url), String(child.pid));
+const home = process.env.MOBILECLI_HOME;
+const daemon = JSON.parse(readFileSync(`${home}/daemon.pid`, 'utf8'));
+writeFileSync(new URL('./daemon.json', import.meta.url), JSON.stringify({ home, pid: daemon.pid }));
+console.log('scenario is hanging');
+await new Promise(() => {});
+""")
+            ambient_home = session / "unrelated-mobilecli"
+            ambient_home.mkdir()
+            with (
+                patch.dict(os.environ, {"MOBILECLI_HOME": str(ambient_home)}),
+                self.assertRaisesRegex(RuntimeError, "timed out"),
+            ):
+                run_scenario(
+                    module,
+                    serial="not-a-device",
+                    device_id="test-avd",
+                    package="test.app",
+                    session=session,
+                    timeout=3,
+                    check_running=lambda: None,
+                )
+            daemon = json.loads((session / "daemon.json").read_text())
+            self.assertNotEqual(Path(daemon["home"]), ambient_home)
+            self.assertEqual(list(ambient_home.iterdir()), [])
+            self.assertFalse(Path(daemon["home"]).exists())
+            for pid in (int((session / "child.pid").read_text()), daemon["pid"]):
+                # A terminated orphan can briefly be a zombie until init reaps it.
+                state = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(pid)],
+                    text=True,
+                    capture_output=True,
+                ).stdout.strip()
+                self.assertTrue(not state or state.startswith("Z"), state)
+            self.assertIn("scenario is hanging", (session / "scenario.log").read_text())
 
 
 def create_avd(args, **kwargs):

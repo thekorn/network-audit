@@ -39,3 +39,19 @@ in `nix/toolchain.nix` with `pkgs.flutter` and remove the override and generated
 metadata. This shared expression supplies both devenv and the distribution
 flake; keep the nixpkgs revisions in `devenv.lock` and `flake.lock` aligned when
 updating the toolchain.
+
+## Mobilewright runtime
+
+`mobilewright.nix` supplies the same immutable JavaScript runtime to devenv and
+both flake packages. `buildNpmPackage` fetches dependencies from the committed
+`network-audit/mobilewright/package-lock.json` into a hash-verified npm cache,
+then runs `npm ci` offline during the build. Shell entry and installed CLI use
+need no manual npm command, writable Nix store, or checkout `node_modules`.
+
+When deliberately updating the npm manifests, update `npmDepsHash` too. Compute
+it from the committed lockfile using `prefetch-npm-deps` from the nixpkgs revision
+in `flake.lock`, then run `devenv test` and `nix flake check`. Keep the optional
+platform packages in the lockfile: Linux and macOS select their own Mobilecli
+binary from the same dependency cache. Runtime install checks import the runner
+and execute that binary; core package checks exercise scenario preflight with
+no caller Node/npm or source checkout. Native Android acceptance is separate.

@@ -19,6 +19,7 @@ from pathlib import Path
 from android import Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
 from report import generate_report
+from scenario import run_scenario, validate_scenario
 
 ROOT = Path(__file__).resolve().parent
 
@@ -45,6 +46,17 @@ def parser():
         # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
         default=sys.platform == "linux" and not os.environ.get("DISPLAY"),
         help="Hide the emulator window (automatic on Linux without DISPLAY)",
+    )
+    result.add_argument(
+        "--scenario",
+        type=Path,
+        help="Trusted Mobilewright .mjs module; finish capture when it returns",
+    )
+    result.add_argument(
+        "--scenario-timeout",
+        type=float,
+        default=300,
+        help="Maximum scenario seconds after app launch (default: 300)",
     )
     result.add_argument(
         "--close-grace",
@@ -85,6 +97,9 @@ def audit(args):
         or args.body_limit <= 0
     ):
         raise ValueError("--close-grace and --body-limit must be positive")
+    if not math.isfinite(args.scenario_timeout) or args.scenario_timeout <= 0:
+        raise ValueError("--scenario-timeout must be positive and finite")
+    scenario = validate_scenario(args.scenario) if args.scenario else None
     config_file = (app if app.is_dir() else app.parent) / "network-audit.toml"
     config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
     domains = normalize_domains(
@@ -133,6 +148,9 @@ def audit(args):
         "body_limit": args.body_limit,
         "close_grace": args.close_grace,
     }
+    if scenario:
+        metadata["scenario"] = str(scenario)
+        metadata["scenario_timeout"] = args.scenario_timeout
 
     def save():
         (session / "session.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -216,27 +234,55 @@ def audit(args):
                 )
                 metadata["state"] = "capturing"
                 save()
-                print(
-                    f"App running on {emulator.serial}. Close/leave the app for {args.close_grace:g}s, or press Ctrl+C to finish.",
-                    flush=True,
-                )
-                absent_since = None
-                while True:
+
+                def check_running():
                     if proxy.poll() is not None:
                         raise RuntimeError(
                             "mitmdump stopped unexpectedly; see proxy.log"
                         )
                     if emulator_process.poll() is not None:
-                        metadata["state"] = "emulator closed"
-                        break
-                    if emulator.foreground(package):
-                        absent_since = None
-                    elif absent_since is None:
-                        absent_since = time.monotonic()
-                    elif time.monotonic() - absent_since >= args.close_grace:
-                        metadata["state"] = "app closed"
-                        break
-                    time.sleep(1)
+                        raise RuntimeError(
+                            "Emulator stopped during scenario; see emulator.log"
+                        )
+
+                if scenario:
+                    print(
+                        f"Running scenario on {emulator.serial}: {scenario}\n"
+                        f"Scenario log: {session / 'scenario.log'}",
+                        flush=True,
+                    )
+                    run_scenario(
+                        scenario,
+                        serial=emulator.serial,
+                        device_id=emulator.device_id,
+                        package=package,
+                        session=session,
+                        timeout=args.scenario_timeout,
+                        check_running=check_running,
+                    )
+                    metadata["state"] = "scenario completed"
+                else:
+                    print(
+                        f"App running on {emulator.serial}. Close/leave the app for {args.close_grace:g}s, or press Ctrl+C to finish.",
+                        flush=True,
+                    )
+                    absent_since = None
+                    while True:
+                        if proxy.poll() is not None:
+                            raise RuntimeError(
+                                "mitmdump stopped unexpectedly; see proxy.log"
+                            )
+                        if emulator_process.poll() is not None:
+                            metadata["state"] = "emulator closed"
+                            break
+                        if emulator.foreground(package):
+                            absent_since = None
+                        elif absent_since is None:
+                            absent_since = time.monotonic()
+                        elif time.monotonic() - absent_since >= args.close_grace:
+                            metadata["state"] = "app closed"
+                            break
+                        time.sleep(1)
             finally:
                 # Ignore a second interrupt while stopping only our own children.
                 previous = {
@@ -274,6 +320,8 @@ def audit(args):
         print(summary.read_text(), end="", flush=True)
     if failure:
         raise RuntimeError(failure)
+    if scenario and metadata["state"] == "interrupted by user":
+        return 130
     return 0
 
 

@@ -8,11 +8,12 @@ sends ten GET requests per batch and an Android WebView loading BUNTE.
 ## Install or run with Nix
 
 On **x86_64 Linux with readable/writable `/dev/kvm`** or **Apple Silicon macOS**,
-the flake bundles the CLI, Python/Jinja2, mitmproxy, OpenSSL, Flutter, JDK and
-the Android SDK with its rootable API 36 Google APIs emulator image. No clone,
-devenv installation, Android Studio or manual SDK setup is required. Nix must
-have `nix-command` and `flakes` enabled (`experimental-features = nix-command
-flakes` in your Nix configuration). Intel Macs and ARM Linux are not supported.
+the flake bundles the CLI, Python/Jinja2, mitmproxy, OpenSSL, Node.js/Mobilewright,
+Flutter, JDK and the Android SDK with its rootable API 36 Google APIs emulator
+image. No clone, devenv installation, npm install, Android Studio or manual SDK
+setup is required. Nix must have `nix-command` and `flakes` enabled
+(`experimental-features = nix-command flakes` in your Nix configuration).
+Intel Macs and ARM Linux are not supported.
 
 **The full package is a multi-gigabyte toolchain download. Using it assumes you
 accept the [Android SDK license](https://developer.android.com/studio/terms);
@@ -54,8 +55,11 @@ The wrapper selects its own pinned SDK and tools without changing your shell.
 Flutter/Gradle use their usual writable user caches (or your `PUB_CACHE` and
 `GRADLE_USER_HOME` overrides); application dependencies still need downloading
 on the first build. Reports are written relative to your current directory,
-not to the Nix store. Domain configuration and all other CLI options work as
-described in [tool usage](network-audit/README.md).
+not to the Nix store. Audit options, domain configuration and experimental
+Mobilewright scenarios work as described in [tool usage](network-audit/README.md).
+The flake and devenv share one lockfile-pinned scenario runtime. Nix installs its
+npm dependencies automatically at build time and reuses the cached result;
+neither shell entry nor an audit needs a manual npm command.
 
 For regenerating reports without Flutter, Java, an SDK or an emulator image:
 
@@ -63,10 +67,10 @@ For regenerating reports without Flutter, Java, an SDK or an emulator image:
 nix run github:thekorn/network-audit#network-audit-core -- report /path/to/session
 ```
 
-This smaller package includes Python/Jinja2, mitmproxy and OpenSSL. Auditing with
-it requires an externally supplied compatible Flutter/Android environment;
-most users should use the default package. It is safe to build and use for
-report generation in an orb.
+This smaller package includes Python/Jinja2, mitmproxy, OpenSSL and the same
+Node.js/Mobilewright runtime. Auditing with it requires an externally supplied
+compatible Flutter/Android environment; most users should use the default
+package. It is safe to build and use for report generation in an orb.
 
 ## Audit the sample
 

@@ -1,8 +1,8 @@
 # network-audit v1
 
-A Python standard-library CLI with a mitmproxy addon. The pinned devenv supplies
-Python, mitmproxy and OpenSSL; no pip install, Flutter app modification, proxy
-override or `badCertificateCallback` is needed.
+A Python CLI with a mitmproxy addon and Jinja2 report templates. The pinned
+devenv supplies Python, Jinja2, mitmproxy and OpenSSL; no pip install, Flutter
+app modification, proxy override or `badCertificateCallback` is needed.
 
 ## Run
 

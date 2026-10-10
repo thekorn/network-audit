@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>@@TITLE@@ · Network audit</title>
+    <title>{{ metadata.app }} · Network audit</title>
     <script>
       (() => {
         let dark = matchMedia("(prefers-color-scheme: dark)").matches;
@@ -385,26 +385,29 @@
           </button>
         </div>
         <div class="title">
-          <h1>@@TITLE@@</h1>
-          <span class="pill" data-state="@@STATE@@">@@STATE@@</span>
+          <h1>{{ metadata.app }}</h1>
+          <span class="pill" data-state="{{ metadata.state }}"
+            >{{ metadata.state }}</span
+          >
         </div>
         <div class="meta">
-          <span class="mono muted">@@PACKAGE@@</span
-          ><span class="mono muted">@@STARTED@@</span>
+          <span class="mono muted">{{ metadata.get('package', '') }}</span
+          ><span class="mono muted">{{ metadata.started }}</span>
         </div>
       </header>
       <section class="stats" aria-label="Capture totals" id="totals">
         <div class="stat">
-          <strong>@@COUNT@@</strong><span>HTTP exchanges</span>
+          <strong>{{ flows|length }}</strong><span>HTTP exchanges</span>
         </div>
         <div class="stat">
-          <strong>@@HOSTS@@</strong><span>Matched hosts</span>
+          <strong>{{ host_counts|length }}</strong><span>Matched hosts</span>
         </div>
         <div class="stat">
-          <strong>@@BYTES@@</strong><span>Response body bytes, on wire</span>
+          <strong>{{ '{:,.1f}'.format(total_bytes / 1024) }} KB</strong
+          ><span>Response body bytes, on wire</span>
         </div>
         <div class="stat">
-          <strong>@@ERRORS@@</strong><span>HTTP errors / incomplete</span>
+          <strong>{{ errors }}</strong><span>HTTP errors / incomplete</span>
         </div>
       </section>
       <div class="context">
@@ -412,13 +415,23 @@
           <h2>Requests by host</h2>
           <figure aria-label="HTTP exchange counts by host">
             <ul class="bars">
-              @@BARS@@
+              {% for host, count in host_counts %}
+              <li>
+                <span>{{ host }}</span>
+                <meter min="0" max="{{ max_host_count }}" value="{{ count }}"
+                  >{{ count }}</meter
+                >
+                <b>{{ count }}</b>
+              </li>
+              {% else %}
+              <li class="empty-hosts">No matched hosts</li>
+              {% endfor %}
             </ul>
           </figure>
         </section>
         <section class="panel" id="scope">
           <h2>Capture scope</h2>
-          <p class="mono">@@DOMAINS@@</p>
+          <p class="mono">{{ metadata.domains|join(' · ') }}</p>
           <p class="muted">
             Selected-domain HTTP(S) traffic from a dedicated emulator, including
             native clients and WebView. Other domains are not recorded.
@@ -432,9 +445,11 @@
       <section
         id="diagnostics"
         aria-label="Capture diagnostics"
-        data-empty="@@EMPTYDIAGNOSTICS@@"
+        data-empty="{{ 'false' if diagnostics else 'true' }}"
       >
-        @@DIAGNOSTICS@@
+        {% for diagnostic in diagnostics %}
+        <p>{{ diagnostic }}</p>
+        {% endfor %}
       </section>
       <section id="requests">
         <h2>Request &amp; response explorer</h2>
@@ -466,7 +481,7 @@
       </footer>
     </main>
     <script type="application/json" id="audit-data">
-      @@DATA@@
+      {{ {'flows': flows, 'metadata': metadata}|tojson }}
     </script>
     <script>
       "use strict";

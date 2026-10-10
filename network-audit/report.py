@@ -1,10 +1,10 @@
 """Offline, self-contained report. Captured content is data, never HTML."""
 
 import json
-import re
 from collections import Counter
-from html import escape
 from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
 def read_events(path):
@@ -42,34 +42,21 @@ def generate_report(session):
         for f in flows
     )
     total_bytes = sum((f["response"] or {}).get("bytes") or 0 for f in flows)
-    template = Path(__file__).with_name("report.html").read_text()
-    data = (
-        json.dumps({"flows": flows, "metadata": metadata}, ensure_ascii=True)
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("&", "\\u0026")
+    environment = Environment(
+        loader=FileSystemLoader(Path(__file__).resolve().parent),
+        autoescape=True,
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
     )
-    replacements = {
-        "TITLE": escape(metadata["app"]),
-        "PACKAGE": escape(metadata.get("package", "")),
-        "STARTED": escape(metadata["started"]),
-        "STATE": escape(metadata["state"]),
-        "DOMAINS": " · ".join(escape(d) for d in metadata["domains"]),
-        "COUNT": str(len(flows)),
-        "ERRORS": str(errors),
-        "BYTES": f"{total_bytes / 1024:,.1f} KB",
-        "HOSTS": str(len(counts)),
-        "BARS": "".join(
-            f'<li><span>{escape(host)}</span><meter min="0" max="{max(counts.values())}" value="{count}">{count}</meter><b>{count}</b></li>'
-            for host, count in counts.most_common()
-        )
-        or '<li class="empty-hosts">No matched hosts</li>',
-        "DIAGNOSTICS": "".join(f"<p>{escape(d)}</p>" for d in diagnostics),
-        "EMPTYDIAGNOSTICS": "false" if diagnostics else "true",
-        "DATA": data,
-    }
-    # One substitution pass: captured strings cannot introduce template tokens.
-    output = re.sub(r"@@([A-Z]+)@@", lambda m: replacements[m[1]], template)
+    output = environment.get_template("report.html").render(
+        metadata=metadata,
+        flows=flows,
+        diagnostics=diagnostics,
+        host_counts=counts.most_common(),
+        max_host_count=max(counts.values(), default=0),
+        errors=errors,
+        total_bytes=total_bytes,
+    )
     path = session / "report.html"
     path.write_text(output)
     return path

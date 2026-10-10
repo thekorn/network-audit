@@ -8,6 +8,7 @@
 
 let
   flutter = import ./nix/flutter.nix { inherit pkgs; };
+  python = pkgs.python3.withPackages (ps: [ ps.jinja2 ]);
   buildToolsVersion = "36.0.0";
   ndkVersion = "28.2.13676358";
   # Compose the SDK directly: devenv's Android module also adds an emulator
@@ -43,13 +44,13 @@ in
       pkgs.jdk17
       android.androidsdk
       android.platform-tools
-      pkgs.python3
+      python
       pkgs.mitmproxy
       pkgs.openssl
     ];
 
     scripts.network-audit.exec = ''
-      exec ${pkgs.python3}/bin/python3 ${lib.escapeShellArg "${config.devenv.root}/network-audit/cli.py"} "$@"
+      exec ${python}/bin/python3 ${lib.escapeShellArg "${config.devenv.root}/network-audit/cli.py"} "$@"
     '';
 
     env = {

@@ -17,3 +17,8 @@
   in an orb.
 - Keep `.agents/resume` fast and free of package installs. Long-lived services
   belong in `.amp/services.yaml`, not lifecycle hooks.
+
+# Git workflow
+
+- Working directly on `main` is okay.
+- Commit and push frequently, keeping changes small and focused.

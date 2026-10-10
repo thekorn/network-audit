@@ -46,6 +46,7 @@ in
     ];
 
     env = {
+      DEVENV_TOOLBOX = "network-audit";
       ANDROID_HOME = androidHome;
       ANDROID_SDK_ROOT = androidHome;
       ANDROID_NDK_ROOT = "${androidHome}/ndk/${ndkVersion}";

@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import chdir, contextmanager, redirect_stdout
+from contextlib import chdir, contextmanager, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from itertools import product
@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
+from recording import ScreenRecording
 from report import generate_report, read_events
 from scenario import RUNNER, load_scenario, run_scenario, validate_executor
 
@@ -40,6 +41,13 @@ class AuditSessionTest(unittest.TestCase):
             ("interrupt", "interrupted by user", []),
             ("launch failure", "failed", []),
             ("proxy failure", "failed", []),
+            ("background", "app closed", ["--record"]),
+            ("interrupt", "interrupted by user", ["--record"]),
+            ("launch failure", "failed", ["--record"]),
+            ("recording start failure", "failed", ["--record"]),
+            ("recording stopped", "failed", ["--record"]),
+            ("recording save failure", "failed", ["--record"]),
+            ("launch and recording failure", "failed", ["--record"]),
         ):
             with (
                 self.subTest(outcome=outcome, options=options),
@@ -83,14 +91,52 @@ class AuditSessionTest(unittest.TestCase):
                 # A brief excursion must not consume the grace period of a
                 # later excursion: the app returns before leaving for good.
                 device.foreground.side_effect = lambda _: elapsed[0] in (0, 2)
-                if outcome == "interrupt":
-                    device.launch.side_effect = KeyboardInterrupt
-                elif outcome == "launch failure":
-                    device.launch.side_effect = subprocess.TimeoutExpired(
-                        "adb", 30, stderr=b"launch timed out\xff"
-                    )
-                elif outcome == "proxy failure":
+                if outcome == "proxy failure":
                     proxy.poll.side_effect = [None, 1, 1]
+
+                running = {"emulator", "proxy"}
+                device.close.side_effect = lambda: running.remove("emulator")
+                proxy.send_signal.side_effect = lambda _: running.remove("proxy")
+
+                def launch(*_args):
+                    if "--record" in options:
+                        self.assertIn("recording", running, "App launch must be recorded")
+                    if outcome == "interrupt":
+                        raise KeyboardInterrupt
+                    if outcome.startswith("launch"):
+                        raise subprocess.TimeoutExpired(
+                            "adb", 30, stderr=b"launch timed out\xff"
+                        )
+
+                device.launch.side_effect = launch
+
+                def recorder(_device, session):
+                    self.assertIn("--record", options, "Recording must be opt-in")
+                    result = Mock()
+
+                    def start():
+                        if outcome == "recording start failure":
+                            raise RuntimeError("encoder unavailable")
+                        running.add("recording")
+
+                    def stop():
+                        self.assertIn("emulator", running, "Video needs the live device")
+                        running.discard("recording")
+                        if outcome in (
+                            "recording save failure", "launch and recording failure"
+                        ):
+                            raise RuntimeError("video transfer failed")
+                        if outcome == "recording start failure":
+                            return None
+                        video = session / "recording.mp4"
+                        video.write_bytes(b"finalized video fixture")
+                        return video
+
+                    result.start.side_effect = start
+                    result.stop.side_effect = stop
+                    if outcome == "recording stopped":
+                        result.check.side_effect = RuntimeError("encoder exited")
+                    return result
 
                 def start_proxy(*_args, **kwargs):
                     session = Path(kwargs["env"]["NETWORK_AUDIT_SESSION"])
@@ -122,6 +168,8 @@ class AuditSessionTest(unittest.TestCase):
                     patch("cli.Emulator", return_value=device),
                     patch("cli.time.sleep", side_effect=sleep),
                     patch("cli.time.monotonic", side_effect=lambda: elapsed[0]),
+                    patch("cli.ScreenRecording", side_effect=recorder),
+                    redirect_stderr(StringIO()) as errors,
                     redirect_stdout(StringIO()) as output,
                 ):
                     if state == "failed":
@@ -136,6 +184,27 @@ class AuditSessionTest(unittest.TestCase):
                 self.assertEqual(metadata["body_limit"], 37)
                 self.assertEqual(metadata["device"], "emulator-5554")
                 self.assertIn("ended", metadata)
+                self.assertNotIn("emulator", running)
+                self.assertNotIn("recording", running)
+                if outcome != "proxy failure":
+                    self.assertNotIn("proxy", running)
+                if "--record" in options and outcome not in (
+                    "recording start failure",
+                    "recording save failure",
+                    "launch and recording failure",
+                ):
+                    self.assertEqual(metadata["recording"], "recording.mp4")
+                    self.assertEqual(
+                        (session / "recording.mp4").read_bytes(), b"finalized video fixture"
+                    )
+                    self.assertIn(f"Video: {session / 'recording.mp4'}", output.getvalue())
+                else:
+                    self.assertNotIn("recording", metadata)
+                    self.assertFalse((session / "recording.mp4").exists())
+                    self.assertNotIn("Video:", output.getvalue())
+                if outcome in ("recording save failure", "launch and recording failure"):
+                    self.assertIn("video transfer failed", metadata["recording_failure"])
+                    self.assertIn("video transfer failed", errors.getvalue())
                 self.assertEqual(session.stat().st_mode & 0o777, 0o700)
                 report = (session / "report.html").read_text()
                 self.assertIn("No matching HTTP exchanges", report)
@@ -152,7 +221,7 @@ class AuditSessionTest(unittest.TestCase):
                     output.getvalue().splitlines(),
                 )
                 self.assertTrue(output.getvalue().endswith(summary))
-                if outcome == "launch failure":
+                if outcome.startswith("launch"):
                     self.assertEqual(metadata["failure"], "launch timed out\ufffd")
                     self.assertIn("launch timed out", report)
                 elif outcome == "proxy failure":
@@ -549,6 +618,89 @@ class AuditSessionTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, message):
                         audit(args)
                     self.assertFalse((root / "runs").exists())
+
+
+class ScreenRecordingTest(unittest.TestCase):
+    def test_recording_finalizes_before_transfer_and_rejects_incomplete_transfers(self):
+        # Real child processes and signals, with ADB/Android as the boundary.
+        # Bytes are a lifecycle fixture, not a claim of native MP4 verification.
+        for mode in ("complete", "pull failure", "empty"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binaries = root / "bin"
+                binaries.mkdir()
+                remote = root / "device"
+                remote.mkdir()
+                session = root / "session with spaces"
+                session.mkdir()
+                adb = binaries / "adb"
+                adb.write_text(
+                    f"#!{sys.executable}\n"
+                    + """
+import os, subprocess, sys
+from pathlib import Path
+assert sys.argv[1:3] == ['-s', '127.0.0.1:5581'], 'Must target the owned transport'
+root = Path(__file__).resolve().parents[1]
+remote = root / 'device'
+if sys.argv[3] == 'shell':
+    script = sys.argv[4].replace('/data/local/tmp/', str(remote) + '/')
+    sys.exit(subprocess.call(['sh', '-c', script]))
+assert sys.argv[3] == 'pull'
+source = remote / Path(sys.argv[4]).name
+assert source.read_bytes() == b'finalized', 'Transfer preceded graceful finalization'
+target = Path(sys.argv[5])
+mode = os.environ['RECORDING_FIXTURE_MODE']
+target.write_bytes(b'' if mode == 'empty' else source.read_bytes())
+sys.exit(1 if mode == 'pull failure' else 0)
+"""
+                )
+                screenrecord = binaries / "screenrecord"
+                screenrecord.write_text(
+                    f"#!{sys.executable}\n"
+                    + """
+import signal, sys, time
+from pathlib import Path
+assert sys.argv[1:3] == ['--time-limit', '0'], 'Audit must not stop at 180 seconds'
+output = Path(sys.argv[3])
+def finish(*_):
+    output.write_bytes(b'finalized')
+    sys.exit(0)
+signal.signal(signal.SIGINT, finish)
+output.write_bytes(b'open')
+while True:
+    time.sleep(0.1)
+"""
+                )
+                adb.chmod(0o700)
+                screenrecord.chmod(0o700)
+                device = Emulator(root, None, 8080, True, "test-image")
+                device.serial = "127.0.0.1:5581"
+                recording = ScreenRecording(device, session)
+                with patch.dict(
+                    os.environ,
+                    {
+                        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                        "RECORDING_FIXTURE_MODE": mode,
+                    },
+                ):
+                    try:
+                        recording.start()
+                        recording.check()
+                    finally:
+                        if mode == "complete":
+                            video = recording.stop()
+                            self.assertEqual(video, session / "recording.mp4")
+                            assert video is not None
+                            self.assertEqual(video.read_bytes(), b"finalized")
+                        else:
+                            with self.assertRaises(
+                                (RuntimeError, subprocess.CalledProcessError)
+                            ):
+                                recording.stop()
+                            self.assertFalse((session / "recording.mp4").exists())
+                pid = int((remote / "network-audit-recording.pid").read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
 
 
 class AndroidOutputTest(unittest.TestCase):

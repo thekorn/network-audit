@@ -87,6 +87,11 @@ Quote paths containing spaces, for example
 `devenv shell audit '../my app' --domain api.example.com`.
 Add `--headless` to hide the emulator window.
 
+Add `--record` to save a silent `recording.mp4` of the emulator screen beside
+the report. It works with manual and scenario runs, including `--headless`,
+and saves on Ctrl+C or normal completion. See
+[video recording and limitations](network-audit/README.md#record-an-audit-video).
+
 For Flutter compile-time configuration, add
 `--dart-define-from-file /path/to/config/dev.json` (or a `.env` file).
 Repeat the option to layer files; later values win. Relative paths are based on

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from android import Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
+from recording import ScreenRecording
 from report import generate_report
 from scenario import load_scenario, run_scenario
 
@@ -57,6 +58,11 @@ def parser():
         # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
         default=sys.platform == "linux" and not os.environ.get("DISPLAY"),
         help="Hide the emulator window (automatic on Linux without DISPLAY)",
+    )
+    result.add_argument(
+        "--record",
+        action="store_true",
+        help="Record the emulator screen to a silent recording.mp4 beside the report",
     )
     result.add_argument(
         "--scenario",
@@ -214,8 +220,9 @@ def audit(args):
             "graphical session with DISPLAY set and omit --headless.",
             flush=True,
         )
-    proxy = emulator = None
+    proxy = emulator = recording = None
     failure = None
+    recording_failure = None
     try:
         with (
             tempfile.TemporaryDirectory(prefix="network-audit-") as temporary,
@@ -277,6 +284,10 @@ def audit(args):
                 emulator.install_ca(ca_dir / "mitmproxy-ca-cert.pem")
                 metadata["device"] = emulator.serial
                 save()
+                if args.record:
+                    recording = ScreenRecording(emulator, session)
+                    recording.start()
+                    print("Recording the emulator screen (no audio).", flush=True)
                 emulator.launch(apk, package, activity)
                 wait_for(
                     lambda: emulator.foreground(package),
@@ -295,6 +306,8 @@ def audit(args):
                         raise RuntimeError(
                             "Emulator stopped during scenario; see emulator.log"
                         )
+                    if recording:
+                        recording.check()
 
                 if executor:
                     print(
@@ -326,6 +339,8 @@ def audit(args):
                         if emulator_process.poll() is not None:
                             metadata["state"] = "emulator closed"
                             break
+                        if recording:
+                            recording.check()
                         if emulator.foreground(package):
                             absent_since = None
                         elif absent_since is None:
@@ -341,6 +356,17 @@ def audit(args):
                     for sig in (signal.SIGINT, signal.SIGTERM)
                 }
                 try:
+                    if recording:
+                        try:
+                            video = recording.stop()
+                            if video:
+                                metadata["recording"] = video.name
+                        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                            # Keep the original audit failure as well as any
+                            # recording failure, and always clean up the device.
+                            recording_failure = f"Could not save recording: {error}"
+                            metadata["recording_failure"] = recording_failure
+                            print(recording_failure, file=sys.stderr, flush=True)
                     try:
                         if emulator:
                             emulator.close()
@@ -360,6 +386,10 @@ def audit(args):
         metadata["failure"] = detail
         failure = detail
     finally:
+        if recording_failure and not failure:
+            metadata["state"] = "failed"
+            metadata["failure"] = recording_failure
+            failure = recording_failure
         metadata["ended"] = datetime.now(UTC).isoformat()
         save()
         report = generate_report(session)
@@ -368,6 +398,8 @@ def audit(args):
             f"\nReport: {report}\nText report: {summary}\nRaw flows: {session / 'flows.mitm'}\n",
             flush=True,
         )
+        if "recording" in metadata:
+            print(f"Video: {session / metadata['recording']}\n", flush=True)
         print(summary.read_text(), end="", flush=True)
     if failure:
         raise RuntimeError(failure)

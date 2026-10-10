@@ -211,6 +211,36 @@ The device serial is printed and written to the session metadata. In headless
 mode, use `adb -s <serial> shell input keyevent KEYCODE_HOME` to leave the app
 and finish the audit, or press Ctrl+C.
 
+### Record an audit video
+
+Add `--record` to save a silent MP4 of the emulator screen beside the report:
+
+```sh
+network-audit /path/to/app.apk --domain api.example.com --record
+network-audit sample-app --headless --scenario sample-app/scenarios/browse.toml --record
+# The devenv shortcut forwards the flag too:
+devenv shell audit sample-app --domain dummyjson.com --record
+```
+
+Recording starts before APK installation and app launch, after emulator boot
+and CA setup. It stops and saves `recording.mp4` before emulator shutdown on
+normal completion, Ctrl+C, SIGTERM, or a handled audit/scenario failure. The
+CLI prints `Video: <path>` when the recording was saved. `--output` moves the
+video along with the other session files. Without `--record`, no video is made.
+
+This uses the declared API 36 image's `screenrecord --time-limit 0`, so there is
+no three-minute time limit and no additional host dependency. It captures the
+whole display, not audio or the host's emulator window, and works headless.
+Android chooses the recording resolution/encoding at startup. Video consumes
+additional device and host disk space.
+
+A recording failure fails the command rather than silently claiming a complete
+video; network reports are still generated. See `recording.log` and session
+diagnostics. Failed transfers can leave `recording.mp4.partial`. Finish with
+Ctrl+C or leave the app instead of killing/closing the emulator: a device crash,
+SIGKILL, or host power loss can prevent video finalization or recovery.
+**Screen contents are not redacted; review the video before sharing.**
+
 ## Experimental Mobilewright scenarios
 
 Devenv and both flake packages automatically provide Node.js and the same
@@ -355,6 +385,10 @@ with a private umask:
 - `session.json`, `emulator.log`, `proxy.log`: session state and diagnostics.
   mitmproxy's console warnings and the captured traffic print to the terminal;
   `proxy.log` contains its stderr.
+- `recording.mp4`, `recording.log` (`--record`): silent emulator video and recorder
+  diagnostics. Successful saves add `recording` to `session.json`; recording
+  cleanup errors are kept separately as `recording_failure`, so an original
+  audit/scenario failure is not lost.
 - `scenario.log` (automated runs): scenario progress, assertion failures and
   Mobilewright errors. The resolved TOML `scenario` path, JavaScript `executor`
   path and timeout are in `session.json`. Its `domains` value is `null` for
@@ -425,6 +459,9 @@ The flake also checks scenario preflight through its installed CLI with an
 empty caller environment, outside the source tree.
 Audit lifecycle tests use real mitmproxy/report IO with Android and scenario
 outcomes substituted; they are not native UI verification.
+Recording tests exercise graceful process signaling, transfer completion,
+opt-in behavior and report preservation through a substituted ADB/device
+boundary; they do not verify native MP4 encoding or playback.
 
 The tests use real mitmdump and local HTTP/TLS servers. They check hostname
 boundaries, compressed responses, repeated headers, binary POSTs, upstream

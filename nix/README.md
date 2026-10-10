@@ -29,10 +29,13 @@ the resulting hash mismatches, and writes the actual hashes. It downloads
 artifacts for several platforms and can take minutes and substantial disk space;
 it must **not** run during orb setup.
 
-Run `.agents/setup`, `devenv test`, and a starter-app `flutter analyze`,
+Run `.agents/setup`, `devenv test`, `nix flake check`, and a starter-app `flutter analyze`,
 `flutter test`, and `flutter build apk --debug` after an update. Check the SDK,
 NDK and build-tools versions too. Do not mistake successful metadata generation
 for a successful application build.
 
 When the locked nixpkgs ships the desired release, replace the `flutter` binding
-in `devenv.nix` with `pkgs.flutter` and remove the override and generated metadata.
+in `nix/toolchain.nix` with `pkgs.flutter` and remove the override and generated
+metadata. This shared expression supplies both devenv and the distribution
+flake; keep the nixpkgs revisions in `devenv.lock` and `flake.lock` aligned when
+updating the toolchain.

@@ -5,6 +5,10 @@ devenv.local.nix
 devenv.local.yaml
 .amp/portals/*
 
+# Nix build output links.
+/result
+/result-*
+
 # Flutter/Android generated files.
 .dart_tool/
 .flutter-plugins-dependencies

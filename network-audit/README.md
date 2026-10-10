@@ -1,10 +1,20 @@
 # network-audit v1
 
 A Python CLI with a mitmproxy addon and Jinja2 report templates. The pinned
-devenv supplies Python, Jinja2, mitmproxy and OpenSSL; no pip install, Flutter
-app modification, proxy override or `badCertificateCallback` is needed.
+Nix flake or devenv supplies Python, Jinja2, mitmproxy and OpenSSL; no pip install,
+Flutter app modification, proxy override or `badCertificateCallback` is needed.
 
 ## Run
+
+Install or run the self-contained flake on a supported host as described in
+[Nix distribution](../README.md#install-or-run-with-nix):
+
+```sh
+nix run github:thekorn/network-audit -- /path/to/app.apk --domain api.example.com
+```
+
+The default flake package includes the emulator and image; it needs no
+`devenv.local.nix`. For source development with devenv instead:
 
 On an Apple Silicon Mac or an x86_64 Linux machine with readable/writable
 `/dev/kvm`, set `androidEmulator.enable = true;` in the repository's ignored
@@ -28,7 +38,7 @@ natively on Apple Silicon, not under Rosetta; Intel Macs are not supported by
 the pinned Nix Flutter/Android packages. Android Studio is not required for this
 Android workflow. `emulator -accel-check` should report
 that Hypervisor.Framework is usable. The CLI checks acceleration and the image
-before starting the build. The image is selected by devenv via
+before starting the build. The image is selected by the flake or devenv via
 `NETWORK_AUDIT_SYSTEM_IMAGE`; do not override it or install SDK components by hand.
 
 Put defaults in the app directory (or beside an APK) as `network-audit.toml`:
@@ -131,11 +141,14 @@ network-audit report .network-audit/runs/<session>
 From the repository root:
 
 ```sh
+nix flake check
 devenv test
 devenv shell pyright
 python3 -m unittest discover -s network-audit/tests -v
 ```
 
+`nix flake check` builds and tests the core distribution without an emulator
+image, including installed-command/report checks outside the source tree.
 `devenv test` includes Pyright and the Python tests. Pyright checks the tool and
 its tests in standard mode, using the Python version and dependencies supplied
 by the pinned devenv environment. Inside `devenv shell`, run `pyright` directly;

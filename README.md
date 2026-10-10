@@ -5,6 +5,63 @@ Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
 sends ten GET requests per batch and an Android WebView loading BUNTE.
 
+## Install or run with Nix
+
+On **x86_64 Linux with readable/writable `/dev/kvm`** or **Apple Silicon macOS**,
+the flake bundles the CLI, Python/Jinja2, mitmproxy, OpenSSL, Flutter, JDK and
+the Android SDK with its rootable API 36 Google APIs emulator image. No clone,
+devenv installation, Android Studio or manual SDK setup is required. Nix must
+have `nix-command` and `flakes` enabled (`experimental-features = nix-command
+flakes` in your Nix configuration). Intel Macs and ARM Linux are not supported.
+
+**The full package is a multi-gigabyte toolchain download. Using it assumes you
+accept the [Android SDK license](https://developer.android.com/studio/terms);
+the flake permits the required unfree SDK packages and accepts that license
+declaratively. Do not build or run the full package inside an Amp orb.**
+
+The emulator also needs over 12 GiB of free temporary-disk space for its
+disposable AVD; leave additional room for Flutter/Gradle caches and builds.
+Set `TMPDIR` to a writable directory on a larger volume if necessary.
+
+Run without installing, passing either an APK or a Flutter project with a
+committed `pubspec.lock`:
+
+```bash
+nix run github:thekorn/network-audit -- /path/to/app.apk --domain api.example.com
+nix run github:thekorn/network-audit -- /path/to/flutter-project --domain api.example.com
+```
+
+Or install the `network-audit` command into your Nix profile:
+
+```bash
+nix profile add github:thekorn/network-audit
+network-audit /path/to/app.apk --domain api.example.com
+```
+
+`packages.default` / `packages.network-audit` and the corresponding `apps`
+outputs provide the same full package. To pin a particular source revision,
+use `github:thekorn/network-audit/<commit>` instead. In a checkout, `nix run . --
+...` and `nix build .` use the local flake. A profile install does not install the
+sample app; clone this repository if you want to audit `sample-app`.
+
+The wrapper selects its own pinned SDK and tools without changing your shell.
+Flutter/Gradle use their usual writable user caches (or your `PUB_CACHE` and
+`GRADLE_USER_HOME` overrides); application dependencies still need downloading
+on the first build. Reports are written relative to your current directory,
+not to the Nix store. Domain configuration and all other CLI options work as
+described in [tool usage](network-audit/README.md).
+
+For regenerating reports without Flutter, Java, an SDK or an emulator image:
+
+```bash
+nix run github:thekorn/network-audit#network-audit-core -- report /path/to/session
+```
+
+This smaller package includes Python/Jinja2, mitmproxy and OpenSSL. Auditing with
+it requires an externally supplied compatible Flutter/Android environment;
+most users should use the default package. It is safe to build and use for
+report generation in an orb.
+
 ## Audit the sample
 
 On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host** (not in an Amp
@@ -71,7 +128,10 @@ See [tool usage, configuration, limits and tests](network-audit/README.md).
 
 ## Toolchain
 
-`devenv.lock` pins nixpkgs and devenv modules. The current environment provides
+`flake.lock` pins the distribution's nixpkgs input; `devenv.lock` pins nixpkgs
+and devenv modules for development. Both initially select the same nixpkgs
+revision, and `nix/toolchain.nix` shares the SDK versions and environment between
+them. The current environment provides
 Flutter 3.47.7 stable (Dart 3.13.5), devenv 2.4.0, JDK 17, Android API 36,
 build-tools 36.0.0, NDK 28.2.13676358, CMake 3.22.1, `adb`, `sdkmanager`, and
 `avdmanager`. These Android versions match the Flutter starter project's requirements.
@@ -105,11 +165,20 @@ Dart come from the same Nix package; do not run `flutter upgrade`, `sdkmanager
 --install`, or try to write into `/nix/store`. Change the declared versions and
 update the lockfile instead. Pub and Gradle caches live under `.devenv/state/`.
 
-To deliberately update the toolchain, run `devenv update`, review `devenv.lock`,
+To deliberately update the toolchain, run `devenv update` and `nix flake update
+nixpkgs`, review both lockfiles and keep their nixpkgs revisions aligned,
 update or remove the Flutter override as described in `nix/README.md`, check
-Flutter's Android defaults against `devenv.nix`, and run `devenv test` plus an
-Android APK build. Updating nixpkgs also updates the devenv CLI installed by orb
-setup; keep its version compatible with the modules pinned in `devenv.yaml`.
+Flutter's Android defaults against `nix/toolchain.nix`, and run `devenv test`,
+`nix flake check` plus an Android APK build. Updating nixpkgs also updates the
+devenv CLI installed by orb setup; keep its version compatible with the modules
+pinned in `devenv.yaml`.
+
+`nix flake check` builds the core package, runs the Python tests (including real
+local HTTP/TLS proxy traffic), and tests the installed command and report
+template in a clean environment outside the source tree. It does **not**
+download emulator images or test a running Android device. Use `nix flake check
+--all-systems --no-build` to evaluate both supported platforms; build and run
+the default package on each native host for full acceptance testing.
 
 ## Amp orbs: build and test, not Android emulation
 

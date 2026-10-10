@@ -1,0 +1,50 @@
+{
+  pkgs,
+  enableEmulator ? false,
+}:
+
+let
+  flutter = import ./flutter.nix { inherit pkgs; };
+  buildToolsVersion = "36.0.0";
+  ndkVersion = "28.2.13676358";
+  emulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
+  # Compose directly: devenv's Android module adds an emulator helper even
+  # when its emulator option is disabled. Orbs must not realize emulator images.
+  androidEnv = pkgs.callPackage "${pkgs.path}/pkgs/development/mobile/androidenv" {
+    licenseAccepted = true;
+  };
+  android = androidEnv.composeAndroidPackages {
+    platformVersions = [ "36" ];
+    buildToolsVersions = [ buildToolsVersion ];
+    includeNDK = true;
+    ndkVersions = [ ndkVersion ];
+    cmakeVersions = [ "3.22.1" ];
+    includeSources = false;
+    includeEmulator = enableEmulator;
+    includeSystemImages = enableEmulator;
+    systemImageTypes = [ "google_apis" ];
+    abiVersions = [ emulatorAbi ];
+  };
+  androidHome = "${android.androidsdk}/libexec/android-sdk";
+in
+{
+  inherit buildToolsVersion emulatorAbi;
+
+  packages = [
+    flutter
+    pkgs.jdk17
+    android.androidsdk
+    android.platform-tools
+  ];
+
+  env = {
+    ANDROID_HOME = androidHome;
+    ANDROID_SDK_ROOT = androidHome;
+    ANDROID_NDK_ROOT = "${androidHome}/ndk/${ndkVersion}";
+    JAVA_HOME = pkgs.jdk17.home;
+    FLUTTER_ROOT = "${flutter}";
+    GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidHome}/build-tools/${buildToolsVersion}/aapt2";
+    NETWORK_AUDIT_SYSTEM_IMAGE = "system-images;android-36;google_apis;${emulatorAbi}";
+    FLUTTER_SUPPRESS_ANALYTICS = "true";
+  };
+}

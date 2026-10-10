@@ -29,6 +29,11 @@ def parser():
         "app", type=Path, help="Flutter project directory or Android APK"
     )
     result.add_argument(
+        "--use-fvm",
+        action="store_true",
+        help="Use 'fvm flutter' for Flutter project builds (ignored for APKs)",
+    )
+    result.add_argument(
         "--domain",
         action="append",
         help="Exact hostname or '*.example.com'; repeatable; overrides scenario domains",
@@ -106,15 +111,20 @@ def audit(args):
     else:
         domains = normalize_domains(args.domain or [])
         executor = None
+    flutter = ["fvm", "flutter"] if args.use_fvm else ["flutter"]
     for tool in (
         "adb",
         "emulator",
         "avdmanager",
         "mitmdump",
         "openssl",
-        *(["flutter"] if app.is_dir() else []),
+        *([flutter[0]] if app.is_dir() else []),
     ):
         if not shutil.which(tool):
+            if tool == "fvm":
+                raise RuntimeError(
+                    "Missing fvm. Install FVM and add it to PATH to use --use-fvm."
+                )
             raise RuntimeError(
                 f"Missing {tool}. Enter devenv with androidEmulator.enable = true "
                 "on an Apple Silicon Mac or x86_64 Linux KVM host."
@@ -124,10 +134,10 @@ def audit(args):
         if not (app / "pubspec.lock").exists():
             raise ValueError("Flutter projects must have a committed pubspec.lock")
         subprocess.run(
-            ["flutter", "pub", "get", "--enforce-lockfile"], cwd=app, check=True
+            [*flutter, "pub", "get", "--enforce-lockfile"], cwd=app, check=True
         )
         subprocess.run(
-            ["flutter", "build", "apk", "--debug", "--no-pub"], cwd=app, check=True
+            [*flutter, "build", "apk", "--debug", "--no-pub"], cwd=app, check=True
         )
         apk = app / "build/app/outputs/flutter-apk/app-debug.apk"
     else:

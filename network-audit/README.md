@@ -33,6 +33,20 @@ API 36 Google APIs image: ARM64 (`arm64-v8a`) on Apple Silicon, `x86_64` on Linu
 not Google Play or physical devices. Prebuilt APKs must support the selected ABI
 (or contain no native code); the default Flutter build includes both.
 
+To use a Flutter version managed by [FVM](https://fvm.app), install FVM on your
+PATH and configure the project's SDK with `fvm use <version>`, then run:
+
+```sh
+network-audit /path/to/flutter-project --use-fvm --domain api.example.com
+```
+
+`--use-fvm` runs both `fvm flutter pub get --enforce-lockfile` and
+`fvm flutter build apk --debug --no-pub` from the project directory, so FVM
+selects the SDK. Without the flag, the CLI uses `flutter` as before. FVM is not
+bundled with network-audit; a missing `fvm` executable produces an error rather
+than falling back to `flutter`. The flag is ignored for prebuilt APKs, which
+require neither Flutter nor FVM. The Android SDK and emulator remain unchanged.
+
 macOS uses its built-in Hypervisor.Framework, not `/dev/kvm`. Run Nix/devenv
 natively on Apple Silicon, not under Rosetta; Intel Macs are not supported by
 the pinned Nix Flutter/Android packages. Android Studio is not required for this

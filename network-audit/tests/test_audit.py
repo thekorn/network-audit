@@ -32,15 +32,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class AuditSessionTest(unittest.TestCase):
     def test_session_outcomes_preserve_reports(self):
-        for outcome, state in (
-            ("closed", "emulator closed"),
-            ("background", "app closed"),
-            ("interrupt", "interrupted by user"),
-            ("launch failure", "failed"),
-            ("proxy failure", "failed"),
+        for outcome, state, options in (
+            ("closed", "emulator closed", []),
+            ("closed", "emulator closed", ["--use-fvm"]),
+            ("background", "app closed", []),
+            ("interrupt", "interrupted by user", []),
+            ("launch failure", "failed", []),
+            ("proxy failure", "failed", []),
         ):
             with (
-                self.subTest(outcome=outcome),
+                self.subTest(outcome=outcome, options=options),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory)
@@ -60,6 +61,7 @@ class AuditSessionTest(unittest.TestCase):
                         "--close-grace",
                         "2",
                         "--headless",
+                        *options,
                     ]
                 )
                 proxy = Mock()
@@ -105,7 +107,12 @@ class AuditSessionTest(unittest.TestCase):
                     return proxy
 
                 with (
-                    patch("cli.shutil.which", return_value="tool"),
+                    patch(
+                        "cli.shutil.which",
+                        side_effect=lambda name: (
+                            None if name in ("flutter", "fvm") else "tool"
+                        ),
+                    ),
                     patch("cli.check_emulator", return_value="test-image"),
                     patch(
                         "cli.apk_identity", return_value=("org.example.app", ".Main")
@@ -151,6 +158,92 @@ class AuditSessionTest(unittest.TestCase):
                     self.assertIn("mitmdump stopped unexpectedly", metadata["failure"])
                 elif outcome == "background":
                     self.assertEqual(elapsed[0], 5)
+
+    def test_flutter_build_uses_selected_executable_in_project_directory(self):
+        for options, tool, prefix in (
+            ([], "flutter", []),
+            (["--use-fvm"], "fvm", ["flutter"]),
+        ):
+            with (
+                self.subTest(tool=tool),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                app = root / "project with spaces"
+                app.mkdir()
+                (app / "pubspec.lock").touch()
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                executable = bin_dir / tool
+                # Real subprocesses record their argv/cwd; fail the build to
+                # verify errors propagate without starting a capture session.
+                executable.write_text(
+                    f"#!{sys.executable}\n"
+                    "import json, os, sys\n"
+                    "from pathlib import Path\n"
+                    "with Path('commands.jsonl').open('a') as log:\n"
+                    "    log.write(json.dumps([sys.argv[1:], os.getcwd()]) + '\\n')\n"
+                    "sys.exit(42 if 'build' in sys.argv else 0)\n"
+                )
+                executable.chmod(0o755)
+                for name in ("adb", "emulator", "avdmanager", "mitmdump", "openssl"):
+                    (bin_dir / name).symlink_to(executable)
+                args = parser().parse_args(
+                    [
+                        str(app),
+                        "--domain",
+                        "example.test",
+                        "--output",
+                        str(root / "runs"),
+                        *options,
+                    ]
+                )
+                with (
+                    patch.dict(os.environ, {"PATH": str(bin_dir)}),
+                    patch("cli.check_emulator", return_value="test-image"),
+                    self.assertRaises(subprocess.CalledProcessError) as failure,
+                ):
+                    audit(args)
+                self.assertEqual(failure.exception.returncode, 42)
+                self.assertEqual(
+                    [
+                        json.loads(line)
+                        for line in (app / "commands.jsonl").read_text().splitlines()
+                    ],
+                    [
+                        [[*prefix, "pub", "get", "--enforce-lockfile"], str(app)],
+                        [[*prefix, "build", "apk", "--debug", "--no-pub"], str(app)],
+                    ],
+                )
+                self.assertFalse((root / "runs").exists())
+
+    def test_missing_selected_flutter_tool_fails_before_creating_a_session(self):
+        for options, missing in (([], "flutter"), (["--use-fvm"], "fvm")):
+            with (
+                self.subTest(missing=missing),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                (root / "pubspec.lock").touch()
+                args = parser().parse_args(
+                    [
+                        str(root),
+                        "--domain",
+                        "example.test",
+                        "--output",
+                        str(root / "runs"),
+                        *options,
+                    ]
+                )
+                with (
+                    patch(
+                        "cli.shutil.which",
+                        side_effect=lambda name: None if name == missing else "tool",
+                    ),
+                    self.assertRaisesRegex(RuntimeError, rf"Missing {missing}\."),
+                ):
+                    audit(args)
+                self.assertFalse((root / "runs").exists())
 
     def test_invalid_inputs_fail_before_creating_a_session(self):
         with tempfile.TemporaryDirectory() as directory:

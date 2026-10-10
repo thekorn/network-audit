@@ -248,6 +248,9 @@ def audit(args):
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         metadata["state"] = "failed"
         detail = getattr(error, "stderr", None) or str(error)
+        # TimeoutExpired retains bytes even when subprocess.run uses text=True.
+        if isinstance(detail, bytes):
+            detail = detail.decode(errors="replace")
         metadata["failure"] = detail
         failure = detail
     finally:

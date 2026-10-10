@@ -83,6 +83,14 @@ class ReportTest(unittest.TestCase):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            # The untrusted-client test deliberately aborts TLS while mitmproxy
+            # may already have an idle origin connection for certificate lookup.
+            pass
+
     def log_message(self, *args):
         pass
 
@@ -278,9 +286,23 @@ class CaptureTest(unittest.TestCase):
                         json.loads(gzip.decompress(response.read()))["answer"], 42
                     )
                     tls.close()
+                    # A client without our CA must fail, and produce a TLS
+                    # diagnostic rather than an invented HTTP exchange.
+                    untrusted = http.client.HTTPSConnection(
+                        "127.0.0.1",
+                        port,
+                        timeout=10,
+                        context=ssl.create_default_context(),
+                    )
+                    untrusted.set_tunnel("localhost", server.server_port)
+                    with self.assertRaises(ssl.SSLCertVerificationError):
+                        untrusted.request("GET", "/untrusted")
+                    untrusted.close()
                 flows, diagnostics = read_events(path / "events.jsonl")
                 self.assertEqual(len(flows), 1)
-                self.assertEqual(diagnostics, [])
+                self.assertTrue(
+                    any("TLS client failure for localhost" in d for d in diagnostics)
+                )
                 self.assertEqual(flows[0]["host"], "localhost")
                 self.assertIn('"answer":42', flows[0]["response"]["body_text"])
                 (path / "session.json").write_text(

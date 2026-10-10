@@ -106,6 +106,9 @@ def emulator_port():
 class Emulator:
     def __init__(self, temporary, log, proxy_port, headless, system_image):
         self.root = Path(temporary)
+        # mobilecli identifies emulators by AVD name, not their ADB serial.
+        # The owned temporary directory gives concurrent runs distinct names.
+        self.name = self.root.name
         self.log = log
         self.proxy_port = proxy_port
         self.headless = headless
@@ -131,7 +134,7 @@ class Emulator:
                 "create",
                 "avd",
                 "--name",
-                "network-audit",
+                self.name,
                 "--package",
                 self.system_image,
             ],
@@ -139,7 +142,7 @@ class Emulator:
             input="no\n",
             timeout=120,
         )
-        config = Path(env["ANDROID_AVD_HOME"]) / "network-audit.avd" / "config.ini"
+        config = Path(env["ANDROID_AVD_HOME"]) / f"{self.name}.avd" / "config.ini"
         lines = [
             line
             for line in config.read_text().splitlines()
@@ -150,7 +153,7 @@ class Emulator:
         command = [
             "emulator",
             "-avd",
-            "network-audit",
+            self.name,
             "-port",
             str(self.port),
             "-accel",
@@ -240,7 +243,10 @@ test -r "$system/{digest}.0"
     def launch(self, apk, package, activity):
         self.adb("install", "-r", str(apk), timeout=180)
         result = self.adb("shell", "am", "start", "-W", "-n", f"{package}/{activity}")
-        if "Status: ok" not in result:
+        # Android's ~10s first-draw wait can expire on a cold emulator even
+        # though the activity started. The caller still verifies foreground;
+        # do not relaunch and accidentally duplicate the initial requests.
+        if not re.search(r"^Status: (ok|timeout)$", result, re.MULTILINE):
             raise RuntimeError(f"App did not launch: {result}")
 
     def foreground(self, package):

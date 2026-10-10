@@ -284,7 +284,55 @@ class EmulatorOptionsTest(unittest.TestCase):
                 )
 
 
+def create_avd(args, **kwargs):
+    name = args[args.index("--name") + 1]
+    config = Path(kwargs["env"]["ANDROID_AVD_HOME"]) / f"{name}.avd" / "config.ini"
+    config.parent.mkdir(parents=True)
+    config.write_text("hw.ramSize=2048\ndisk.dataPartition.size=12G\n")
+    return ""
+
+
 class EmulatorPreflightTest(unittest.TestCase):
+    def test_start_limits_storage_for_the_unique_avd(self):
+        with tempfile.TemporaryDirectory(prefix="network-audit-") as directory:
+            device = Emulator(directory, None, 8080, True, "test-image")
+
+            with (
+                patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
+                patch("android.run", side_effect=create_avd),
+                patch("android.subprocess.Popen"),
+                patch("android.wait_for"),
+                patch.object(device, "adb", return_value="OK"),
+                patch.object(device, "shell"),
+            ):
+                device.start()
+
+            config = Path(directory) / "avd" / f"{device.name}.avd" / "config.ini"
+            self.assertEqual(
+                dict(line.split("=", 1) for line in config.read_text().splitlines()),
+                {"hw.ramSize": "2048", "disk.dataPartition.size": "6G"},
+            )
+
+    def test_launch_accepts_first_draw_timeout_but_rejects_start_errors(self):
+        emulator = Emulator("/unused", None, 8080, True, "test-image")
+        for status in ("ok", "timeout"):
+            output = (
+                f"Status: {status}\nLaunchState: UNKNOWN (-1)\n"
+                "Activity: test.app/.MainActivity\nWaitTime: 10987\nComplete"
+            )
+            with (
+                self.subTest(status=status),
+                patch("android.run", side_effect=["Success", output]),
+            ):
+                emulator.launch(Path("sample.apk"), "test.app", ".MainActivity")
+        for output in ("Error: Activity class does not exist", "Status: failed", ""):
+            with (
+                self.subTest(output=output),
+                patch("android.run", side_effect=["Success", output]),
+                self.assertRaisesRegex(RuntimeError, "App did not launch"),
+            ):
+                emulator.launch(Path("sample.apk"), "test.app", ".MainActivity")
+
     def test_supported_hosts_use_the_declared_image(self):
         for host, machine, abi, kvm in (
             ("darwin", "arm64", "arm64-v8a", False),

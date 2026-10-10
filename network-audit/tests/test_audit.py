@@ -21,10 +21,33 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from android import check_emulator
+from cli import parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class EmulatorOptionsTest(unittest.TestCase):
+    def test_headless_default_depends_on_host_display(self):
+        for host, display, expected in (
+            ("linux", None, True),
+            ("linux", "", True),
+            ("linux", ":0", False),
+            ("linux", "localhost:10.0", False),
+            ("darwin", None, False),
+        ):
+            with (
+                self.subTest(host=host, display=display),
+                patch("cli.sys.platform", host),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                if display is not None:
+                    os.environ["DISPLAY"] = display
+                self.assertEqual(parser().parse_args(["sample-app"]).headless, expected)
+                self.assertTrue(
+                    parser().parse_args(["sample-app", "--headless"]).headless
+                )
 
 
 class EmulatorPreflightTest(unittest.TestCase):

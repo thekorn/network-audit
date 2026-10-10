@@ -57,8 +57,16 @@ This includes Home, switching to another app, or locking the screen. A short
 permission dialog can be dismissed before the grace expires. Back on Android
 does not necessarily kill an app. Use `--close-grace 30` for longer excursions.
 Ctrl+C also ends the session and produces a report. `--headless` hides the
-emulator window for ADB-driven automation; the device serial is printed and
-written to the session metadata.
+emulator window for ADB-driven automation. On Linux without `DISPLAY` (for
+example, an SSH session without X forwarding), headless mode is automatic and
+the CLI prints a notice instead of letting Qt crash during boot. The pinned
+Linux emulator needs X11/XWayland for its window; to interact graphically, run
+from a desktop terminal with a working `DISPLAY` and omit `--headless`.
+macOS still opens a window by default. A configured but unreachable Linux
+display is not automatically ignored; use `--headless` explicitly in that case.
+The device serial is printed and written to the session metadata. In headless
+mode, use `adb -s <serial> shell input keyevent KEYCODE_HOME` to leave the app
+and finish the audit, or press Ctrl+C.
 
 ## Output and safety
 

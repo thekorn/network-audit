@@ -21,6 +21,17 @@ devenv shell
 network-audit sample-app
 ```
 
+Or enable the emulator for a single command:
+
+```bash
+devenv shell -O androidEmulator.enable:bool true -- network-audit sample-app
+```
+
+On Linux without `DISPLAY` (such as an SSH session), the CLI automatically runs
+headless and prints a notice. Use ADB to interact and Ctrl+C to finish; for an
+emulator window, run from a graphical session with a working X11/XWayland
+`DISPLAY`. `--headless` explicitly hides the window on either supported host.
+
 On macOS, use native ARM64 Nix/devenv, not Rosetta. The environment selects the
 ARM64 Android image and the emulator uses macOS's built-in Hypervisor.Framework;
 Linux uses the x86_64 image and KVM. Intel Macs are not supported by the pinned

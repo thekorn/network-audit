@@ -42,7 +42,9 @@ def parser():
     result.add_argument(
         "--headless",
         action="store_true",
-        help="Hide the emulator window (for automation)",
+        # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
+        default=sys.platform == "linux" and not os.environ.get("DISPLAY"),
+        help="Hide the emulator window (automatic on Linux without DISPLAY)",
     )
     result.add_argument(
         "--close-grace",
@@ -141,6 +143,13 @@ def audit(args):
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,
     )
+    if args.headless:
+        print(
+            "Running headless (no emulator window). Use ADB to interact, "
+            "or press Ctrl+C to finish. For a window on Linux, run from a "
+            "graphical session with DISPLAY set and omit --headless.",
+            flush=True,
+        )
     proxy = emulator = None
     failure = None
     try:

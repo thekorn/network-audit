@@ -291,6 +291,7 @@ class EmulatorPreflightTest(unittest.TestCase):
                     patch("android.sys.platform", host),
                     patch("android.platform.machine", return_value=machine),
                     patch("android.os.access", return_value=kvm),
+                    patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
                     patch.dict(
                         os.environ,
                         {"ANDROID_HOME": sdk, "NETWORK_AUDIT_SYSTEM_IMAGE": image},
@@ -305,6 +306,22 @@ class EmulatorPreflightTest(unittest.TestCase):
                     ),
                 ):
                     self.assertEqual(check_emulator(), image)
+                    with (
+                        patch("android.tempfile.gettempdir", return_value="/chosen-volume"),
+                        patch(
+                            "android.shutil.disk_usage",
+                            return_value=Mock(free=8 * 1024**3 - 1),
+                        ),
+                        patch("cli.shutil.which", return_value="available"),
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "Insufficient emulator storage at /chosen-volume:.*"
+                            "need at least 8 GiB.*TMPDIR.*--output",
+                        ),
+                    ):
+                        # A Flutter directory without a lockfile would fail at
+                        # build preparation if the storage preflight were late.
+                        audit(parser().parse_args([sdk, "--domain", "example.test"]))
                     with (
                         patch(
                             "android.subprocess.run",

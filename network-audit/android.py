@@ -3,11 +3,34 @@
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+
+# The pinned emulator raises smaller userdata requests to 6 GiB.
+DATA_PARTITION_GIB = 6
+# Allow room for writable emulator images in addition to userdata. Builds and
+# caches need their own headroom; this is a preflight, not a reservation.
+MIN_TEMP_FREE_BYTES = (DATA_PARTITION_GIB + 2) * 1024**3
+
+
+def check_storage(directory):
+    free = shutil.disk_usage(directory).free
+    if free < MIN_TEMP_FREE_BYTES:
+        raise RuntimeError(
+            f"Insufficient emulator storage at {directory}: "
+            f"{free / 1024**3:.2f} GiB free; need at least "
+            f"{MIN_TEMP_FREE_BYTES / 1024**3:.0f} GiB "
+            f"({DATA_PARTITION_GIB} GiB userdata plus emulator headroom). "
+            "Set TMPDIR to a writable directory on a larger filesystem or free "
+            "space there. --output only moves reports. Flutter/Gradle builds "
+            "and caches need additional space."
+        )
 
 
 def run(args, *, timeout=60, **kwargs):
@@ -50,6 +73,7 @@ def check_emulator():
             part.strip() for part in (error.stdout, error.stderr) if part
         )
         raise RuntimeError(f"{acceleration} is unavailable: {detail}") from error
+    check_storage(tempfile.gettempdir())
     return image
 
 
@@ -97,6 +121,8 @@ class Emulator:
         return self.adb("shell", script)
 
     def start(self):
+        # The Flutter build may have consumed space since the early preflight.
+        check_storage(self.root)
         env = {**os.environ, "ANDROID_AVD_HOME": str(self.root / "avd")}
         Path(env["ANDROID_AVD_HOME"]).mkdir()
         run(
@@ -113,6 +139,14 @@ class Emulator:
             input="no\n",
             timeout=120,
         )
+        config = Path(env["ANDROID_AVD_HOME"]) / "network-audit.avd" / "config.ini"
+        lines = [
+            line
+            for line in config.read_text().splitlines()
+            if line.split("=", 1)[0].strip() != "disk.dataPartition.size"
+        ]
+        lines.append(f"disk.dataPartition.size={DATA_PARTITION_GIB}G")
+        config.write_text("\n".join(lines) + "\n")
         command = [
             "emulator",
             "-avd",

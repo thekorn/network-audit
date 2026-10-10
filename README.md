@@ -19,9 +19,15 @@ accept the [Android SDK license](https://developer.android.com/studio/terms);
 the flake permits the required unfree SDK packages and accepts that license
 declaratively. Do not build or run the full package inside an Amp orb.**
 
-The emulator also needs over 12 GiB of free temporary-disk space for its
-disposable AVD; leave additional room for Flutter/Gradle caches and builds.
-Set `TMPDIR` to a writable directory on a larger volume if necessary.
+The disposable emulator uses a 6 GiB userdata partition rather than the SDK's
+12 GiB default. The pinned emulator raises smaller requests to 6 GiB. The CLI
+requires at least 8 GiB free on the temporary filesystem (userdata plus headroom),
+checked before building and again before creating the AVD. Leave additional
+room for Flutter/Gradle caches and builds; the check does not reserve space.
+Set `TMPDIR` to an existing writable directory on a larger **filesystem** if
+necessary, for example `TMPDIR=/mnt/large/tmp network-audit ...`. Moving between
+directories on the same filesystem does not help. `--output` moves only reports,
+not the temporary AVD.
 
 Run without installing, passing either an APK or a Flutter project with a
 committed `pubspec.lock`:

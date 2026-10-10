@@ -8,16 +8,22 @@ sends ten GET requests per batch and an Android WebView loading BUNTE.
 ## Audit the sample
 
 On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host** (not in an Amp
-orb), run the audit task from the repository root:
+orb), run the foreground audit command from the repository root:
 
 ```bash
-devenv tasks run network-audit --input app=sample-app
+devenv shell audit sample-app
 ```
 
-This selects `network-audit:audit` and enables the emulator for this run only.
-The required `app` input is a Flutter project path, relative to the repository
-root or absolute. Quote the input if the path contains spaces, for example
-`--input 'app=../my app'`. Add `--show-output` to display the task's output.
+This enables the emulator for this run only and forwards all arguments to
+`network-audit`. The app can be a Flutter project directory or an Android APK.
+Quote paths containing spaces, for example `devenv shell audit '../my app'`.
+CLI options also work: `devenv shell audit sample-app --headless`.
+
+Press **Ctrl+C once** in the terminal to finish the capture, then wait for the
+printed report path. Output streams directly, with no task TUI or confirmation
+prompt. This replaces `devenv tasks run network-audit --input app=sample-app`:
+the foreground command avoids devenv 2.4.0's five-second task shutdown deadline,
+allowing emulator/proxy cleanup and report generation to finish.
 
 Alternatively, enable the declared emulator in the ignored `devenv.local.nix`:
 

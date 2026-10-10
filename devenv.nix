@@ -55,17 +55,11 @@ in
       exec ${python}/bin/python3 ${lib.escapeShellArg "${config.devenv.root}/network-audit/cli.py"} "$@"
     '';
 
-    tasks."network-audit:audit" = {
-      description = "Audit a Flutter app with the Android emulator enabled";
-      cwd = config.devenv.root;
-      exec = ''
-        if ! app="$(${pkgs.jq}/bin/jq -er '.app | select(type == "string" and length > 0)' <<< "''${DEVENV_TASK_INPUT:-null}")"; then
-          echo 'Usage: devenv tasks run network-audit --input app=sample-app' >&2
-          exit 1
-        fi
-        exec devenv shell -O androidEmulator.enable:bool true -- network-audit "$app"
-      '';
-    };
+    # Keep the audit in the foreground: oneshot tasks have a five-second
+    # shutdown deadline that can interrupt cleanup and report generation.
+    scripts.audit.exec = ''
+      exec devenv shell -O androidEmulator.enable:bool true -- network-audit "$@"
+    '';
 
     env = {
       DEVENV_TOOLBOX = "network-audit";

@@ -78,13 +78,14 @@ On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host** (not in an Amp
 orb), run the foreground audit command from the repository root:
 
 ```bash
-devenv shell audit sample-app
+devenv shell audit sample-app --domain '*.bunte.de' --domain dummyjson.com
 ```
 
 This enables the emulator for this run only and forwards all arguments to
 `network-audit`. The app can be a Flutter project directory or an Android APK.
-Quote paths containing spaces, for example `devenv shell audit '../my app'`.
-CLI options also work: `devenv shell audit sample-app --headless`.
+Quote paths containing spaces, for example
+`devenv shell audit '../my app' --domain api.example.com`.
+Add `--headless` to hide the emulator window.
 
 Press **Ctrl+C once** in the terminal to finish the capture, then wait for the
 printed report path. Output streams directly, with no task TUI or confirmation
@@ -102,13 +103,13 @@ Then run from the repository root:
 
 ```bash
 devenv shell
-network-audit sample-app
+network-audit sample-app --domain '*.bunte.de' --domain dummyjson.com
 ```
 
 Or enable the emulator for a single command:
 
 ```bash
-devenv shell -O androidEmulator.enable:bool true -- network-audit sample-app
+devenv shell -O androidEmulator.enable:bool true -- network-audit sample-app --domain '*.bunte.de' --domain dummyjson.com
 ```
 
 On Linux without `DISPLAY` (such as an SSH session), the CLI automatically runs
@@ -132,18 +133,31 @@ The emulator and proxy stop and the command prints the HTML report path.
 To try the experimental Mobilewright scenario instead of interacting manually:
 
 ```bash
-devenv shell audit sample-app --scenario sample-app/scenarios/browse.mjs
+devenv shell audit sample-app --scenario sample-app/scenarios/browse.toml
 ```
 
+Each scenario has a TOML entry point defining its capture domains and JavaScript
+executor. The sample's `sample-app/scenarios/browse.toml` contains:
+
+```toml
+domains = ["*.bunte.de", "dummyjson.com"]
+executor = "browse.mjs"
+```
+
+Executor paths resolve relative to the TOML file. The CLI no longer reads an
+app-wide `network-audit.toml`; manual runs use `--domain`, which can also override
+a scenario's domain list.
+
 The sample scrolls and refreshes the product feed, opens BUNTE, accepts consent,
-scrolls the WebView and waits five seconds, then prints the report. The complete
-scenario is verified on an Apple Silicon Mac with a fresh Android 36 emulator,
-including twenty successful product GETs (two per product). macOS uses loopback
+scrolls the WebView and waits five seconds, then prints the report. Before the
+move to TOML entry points, its JavaScript executor was verified on an Apple
+Silicon Mac with a fresh Android 36 emulator, including twenty successful
+product GETs (two per product). macOS uses loopback
 TCP for ADB and native Android accessibility instead of Mobilecli's Flutter tree,
 which omits WebView consent controls. The Linux path is unchanged and was not
 retested with this macOS fix. Failures still produce a partial report.
-Use `--headless` to hide the emulator window. Scenarios are trusted local `.mjs`
-code; see [scenario usage and failure handling](network-audit/README.md#experimental-mobilewright-scenarios).
+Use `--headless` to hide the emulator window. Executors are trusted local `.js`
+or `.mjs` code; see [scenario usage and failure handling](network-audit/README.md#experimental-mobilewright-scenarios).
 
 Reports contain searchable exchanges, request/response headers and body previews,
 host counts, durations, HTTP errors, incomplete requests and TLS diagnostics.

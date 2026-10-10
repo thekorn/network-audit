@@ -1,6 +1,6 @@
 import { setTimeout as wait } from 'node:timers/promises';
 
-// Run with: network-audit sample-app --scenario sample-app/scenarios/browse.mjs
+// Run with: network-audit sample-app --scenario sample-app/scenarios/browse.toml
 export default async function ({ screen, expect }) {
   console.log('Wait for the initial ten product requests');
   const loaded = screen.getByText('10 / 10 loaded · 0 failed');

@@ -1,1 +1,2 @@
 domains = ["*.bunte.de", "dummyjson.com"]
+executor = "browse.mjs"

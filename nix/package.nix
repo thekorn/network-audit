@@ -82,13 +82,15 @@ stdenvNoCC.mkDerivation {
     # A syntax diagnostic proves scenario preflight loaded its bundled runtime
     # without Node/npm on the caller's PATH or a source checkout/node_modules.
     touch app.apk
-    printf 'export default async function ( {\n' > invalid.mjs
+    mkdir scenarios
+    printf 'export default async function ( {\n' > scenarios/invalid.mjs
+    printf 'domains = ["example.test"]\nexecutor = "invalid.mjs"\n' > scenarios/invalid.toml
     if env -i HOME="$HOME" "$out/bin/network-audit" "$TMPDIR/app.apk" \
-      --domain example.test --scenario "$TMPDIR/invalid.mjs" > scenario.log 2>&1; then
-      echo "Expected invalid scenario syntax to fail" >&2
+      --scenario "$TMPDIR/scenarios/invalid.toml" > scenario.log 2>&1; then
+      echo "Expected invalid executor syntax to fail" >&2
       exit 1
     fi
-    grep -F 'Invalid scenario syntax:' scenario.log
+    grep -F 'Invalid executor syntax:' scenario.log
     grep -F 'SyntaxError' scenario.log
     runHook postInstallCheck
   '';

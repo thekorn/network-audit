@@ -20,7 +20,7 @@ def normalize_domains(values):
         if domain not in domains:
             domains.append(domain)
     if not domains:
-        raise ValueError("No domains configured. Use --domain or network-audit.toml.")
+        raise ValueError("No domains configured. Use --domain or --scenario <name>.toml.")
     return domains
 
 

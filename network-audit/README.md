@@ -21,9 +21,9 @@ On an Apple Silicon Mac or an x86_64 Linux machine with readable/writable
 `devenv.local.nix`. Enter `devenv shell` from the repository root:
 
 ```sh
-network-audit sample-app
 network-audit sample-app --domain '*.bunte.de' --domain dummyjson.com
 network-audit /path/to/app.apk --domain api.example.com
+network-audit sample-app --scenario sample-app/scenarios/browse.toml
 ```
 
 The app argument is a Flutter project directory with a committed `pubspec.lock`,
@@ -49,13 +49,28 @@ successful but truncated `adb exec-out`. The printed serial is therefore
 `127.0.0.1:<port>` on macOS; Linux keeps `emulator-<port>`. The forward and ADB
 connection are removed during cleanup without restarting the shared ADB server.
 
-Put defaults in the app directory (or beside an APK) as `network-audit.toml`:
+Each automated scenario has its own TOML entry point, for example
+`sample-app/scenarios/browse.toml`:
 
 ```toml
 domains = ["*.bunte.de", "dummyjson.com"]
+executor = "browse.mjs"
 ```
 
-`--domain` may be repeated and **replaces** the configuration. Exact names match
+Select it with `--scenario sample-app/scenarios/browse.toml`. Both fields are
+required: `domains` is a non-empty list of hostnames, and `executor` is the path
+to a trusted JavaScript file (`.js` or `.mjs`). The TOML path is relative to your
+current working directory; a relative executor path resolves beside the TOML
+file, not beside the app or relative to the working directory. Absolute executor
+paths also work. Different scenarios can share an executor but log different domains.
+
+The CLI no longer discovers `network-audit.toml` in the app directory or beside
+an APK, and `--scenario` no longer accepts a JavaScript file directly. To migrate,
+move the old `domains` list into each scenario's TOML and add its `executor` path.
+For manual captures without a scenario, specify domains with `--domain`.
+
+`--domain` may be repeated and **replaces** the scenario's domain list; the TOML
+must still contain valid `domains` and `executor` fields. Exact names match
 only that host; `*.bunte.de` matches `www.bunte.de` and deeper subdomains, not
 `bunte.de` itself. Include the apex separately when needed. Domain names are
 case-insensitive; use punycode for internationalized names. URL paths, schemes,
@@ -94,15 +109,15 @@ and caches the result; no manual npm installation or checkout-local
 `node_modules` is required. In a devenv shell or with the installed Nix command:
 
 ```sh
-network-audit sample-app --scenario sample-app/scenarios/browse.mjs
+network-audit sample-app --scenario sample-app/scenarios/browse.toml
 # Hide the emulator window and bound the scenario to two minutes:
-network-audit sample-app --headless --scenario sample-app/scenarios/browse.mjs --scenario-timeout 120
+network-audit sample-app --headless --scenario sample-app/scenarios/browse.toml --scenario-timeout 120
 ```
 
 Or run a scenario directly with the full flake package on a supported host:
 
 ```sh
-nix run . -- /path/to/app.apk --domain api.example.com --scenario /path/to/scenario.mjs
+nix run . -- /path/to/app.apk --scenario /path/to/scenario.toml
 ```
 
 The same disposable emulator, capture setup and HTML report are used. The CLI
@@ -125,9 +140,9 @@ silently skips consent. BUNTE is a live external site, so its wording, prompts
 and availability can change. Accepting consent allows the site's advertising
 and tracking in this disposable emulator.
 
-**Acceptance status:** the unchanged sample completed on fresh Android 36 ARM64
-emulators on macOS, including a repeat using the root README's
-`devenv shell audit` command. Captures contain twenty successful product GETs
+**Prior native verification:** the sample's JavaScript executor completed on fresh
+Android 36 ARM64 emulators on macOS before the move to per-scenario TOML entry
+points, including a repeat using `devenv shell audit`. Those captures contain twenty successful product GETs
 (two per product); the final screenshot shows BUNTE content after consent and
 WebView scrolling.
 The macOS runner uses native Android accessibility throughout the scenario,
@@ -138,8 +153,15 @@ resolve or retest that earlier Linux failure.
 
 Scenarios are **trusted local code**, not a sandboxed data format. Only run files
 you trust: they inherit your host environment and can access files and network.
-Use `.mjs` ES modules exporting one async function. Paths resolve relative to
-your current working directory, not the app directory. For example:
+Executors export one async function. Prefer `.mjs` ES modules; `.js` is also
+accepted using Node's normal module rules (including the nearest `package.json`
+`type` field). For example, place these two files together:
+
+```toml
+# my-scenario.toml
+domains = ["api.example.com"]
+executor = "my-scenario.mjs"
+```
 
 ```js
 // my-scenario.mjs
@@ -159,9 +181,9 @@ is the unique AVD name on Linux or that same TCP serial on macOS.
 The runner owns device connection and cleanup; do not launch
 another device or call `process.exit()`. Await all actions. Throw an error or
 let an assertion fail to mark the run failed. You do not need to import
-Mobilewright in scenario files; the context avoids module-resolution problems
+Mobilewright in executor files; the context avoids module-resolution problems
 for files outside this repository. Other imports use normal Node resolution
-relative to your scenario. This is not the Mobilewright/Playwright test-runner
+relative to your executor. This is not the Mobilewright/Playwright test-runner
 format (`test(...)`); TypeScript compilation and test-runner fixtures are not
 included in this experiment.
 
@@ -224,7 +246,8 @@ with a private umask:
   mitmproxy's console warnings and the captured traffic print to the terminal;
   `proxy.log` contains its stderr.
 - `scenario.log` (automated runs): scenario progress, assertion failures and
-  Mobilewright errors. The scenario path and timeout are in `session.json`.
+  Mobilewright errors. The resolved TOML `scenario` path, JavaScript `executor`
+  path and timeout are in `session.json`.
 
 Text bodies are decoded (including compression). The terminal and HTML preview
 limit defaults to 1 MiB of wire bytes / 1 Mi characters of decoded text per
@@ -299,8 +322,9 @@ hostname SNI and trusted certificates (the emulator's proxy transport). Host
 preflight tests cover macOS without KVM, Linux with/without KVM, unsupported
 hosts, missing system images and unavailable hardware acceleration.
 
-Native acceptance: run `network-audit sample-app`, verify ten successful
-`dummyjson.com/products/<1..10>` responses, open BUNTE and inspect its responses,
+Native acceptance: run
+`network-audit sample-app --domain '*.bunte.de' --domain dummyjson.com`, verify ten
+successful `dummyjson.com/products/<1..10>` responses, open BUNTE and inspect its responses,
 press Home, then confirm the report appears and the owned emulator/proxy exit.
 Run once more and finish with Ctrl+C to check the alternate stop path.
 

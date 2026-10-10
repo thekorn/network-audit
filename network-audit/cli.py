@@ -12,14 +12,13 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
 from android import Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
 from report import generate_report
-from scenario import run_scenario, validate_scenario
+from scenario import load_scenario, run_scenario
 
 ROOT = Path(__file__).resolve().parent
 
@@ -32,7 +31,7 @@ def parser():
     result.add_argument(
         "--domain",
         action="append",
-        help="Exact hostname or '*.example.com'; repeatable; overrides app config",
+        help="Exact hostname or '*.example.com'; repeatable; overrides scenario domains",
     )
     result.add_argument(
         "--output",
@@ -50,7 +49,7 @@ def parser():
     result.add_argument(
         "--scenario",
         type=Path,
-        help="Trusted Mobilewright .mjs module; finish capture when it returns",
+        help="Scenario .toml file with domains and a trusted JavaScript executor",
     )
     result.add_argument(
         "--scenario-timeout",
@@ -99,12 +98,14 @@ def audit(args):
         raise ValueError("--close-grace and --body-limit must be positive")
     if not math.isfinite(args.scenario_timeout) or args.scenario_timeout <= 0:
         raise ValueError("--scenario-timeout must be positive and finite")
-    scenario = validate_scenario(args.scenario) if args.scenario else None
-    config_file = (app if app.is_dir() else app.parent) / "network-audit.toml"
-    config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
-    domains = normalize_domains(
-        args.domain if args.domain is not None else config.get("domains", [])
-    )
+    scenario = args.scenario.resolve() if args.scenario else None
+    if scenario:
+        domains, executor = load_scenario(scenario)
+        if args.domain is not None:
+            domains = normalize_domains(args.domain)
+    else:
+        domains = normalize_domains(args.domain or [])
+        executor = None
     for tool in (
         "adb",
         "emulator",
@@ -150,6 +151,7 @@ def audit(args):
     }
     if scenario:
         metadata["scenario"] = str(scenario)
+        metadata["executor"] = str(executor)
         metadata["scenario_timeout"] = args.scenario_timeout
 
     def save():
@@ -245,14 +247,14 @@ def audit(args):
                             "Emulator stopped during scenario; see emulator.log"
                         )
 
-                if scenario:
+                if executor:
                     print(
                         f"Running scenario on {emulator.serial}: {scenario}\n"
                         f"Scenario log: {session / 'scenario.log'}",
                         flush=True,
                     )
                     run_scenario(
-                        scenario,
+                        executor,
                         serial=emulator.serial,
                         device_id=emulator.device_id,
                         package=package,

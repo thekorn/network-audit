@@ -25,7 +25,7 @@ from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
-from scenario import RUNNER, run_scenario, validate_scenario
+from scenario import RUNNER, run_scenario, validate_executor
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,7 +46,8 @@ class AuditSessionTest(unittest.TestCase):
                 root = Path(directory)
                 apk = root / "app.apk"
                 apk.touch()
-                (root / "network-audit.toml").write_text('domains = ["config.test"]')
+                # Legacy app-wide configuration must no longer be read.
+                (root / "network-audit.toml").write_text("not valid TOML")
                 args = parser().parse_args(
                     [
                         str(apk),
@@ -156,6 +157,7 @@ class AuditSessionTest(unittest.TestCase):
             root = Path(directory)
             apk = root / "app.apk"
             apk.touch()
+            (root / "network-audit.toml").write_text('domains = ["legacy.test"]')
             cases = [
                 ([str(root / "missing.apk")], "App not found"),
                 ([str(apk)], "No domains configured"),
@@ -164,6 +166,7 @@ class AuditSessionTest(unittest.TestCase):
             for option, values in (
                 ("--close-grace", ["0", "-1", "nan", "inf"]),
                 ("--body-limit", ["0", "-1"]),
+                ("--scenario-timeout", ["0", "-1", "nan", "inf"]),
             ):
                 cases.extend(
                     ([str(apk), option, value], "must be positive") for value in values
@@ -177,16 +180,58 @@ class AuditSessionTest(unittest.TestCase):
                         audit(args)
                     self.assertFalse((root / "runs").exists())
 
-    def test_config_domains_and_flutter_lockfile_are_validated_before_build(self):
+    def test_scenario_and_flutter_lockfile_are_validated_before_build(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            args = parser().parse_args([str(root), "--output", str(root / "runs")])
-            config = root / "network-audit.toml"
-            config.write_text('domains = "not-a-list"')
-            with self.assertRaisesRegex(ValueError, "list of hostnames"):
-                audit(args)
-            config.write_text('domains = ["config.test"]')
-            with patch("cli.shutil.which", return_value=None):
+            config = root / "scenario.toml"
+            module = root / "executor.mjs"
+            module.write_text("export default async function () {}\n")
+            args = parser().parse_args(
+                [str(root), "--scenario", str(config), "--output", str(root / "runs")]
+            )
+            for filename, definition, message in (
+                (config, None, "existing .toml"),
+                (module, None, "existing .toml"),
+                (config, "[broken", "Invalid scenario TOML"),
+                (config, 'executor = "executor.mjs"', "No domains configured"),
+                (config, 'domains = []', "No domains configured"),
+                (config, 'domains = "config.test"', "list of hostnames"),
+                (config, 'domains = [123]', "list of hostnames"),
+                (config, 'domains = ["https://config.test"]', "Invalid domain"),
+                (config, 'domains = ["config.test"]', "non-empty JavaScript path"),
+                (
+                    config,
+                    'domains = ["config.test"]\nexecutor = "  "',
+                    "non-empty JavaScript path",
+                ),
+                (
+                    config,
+                    'domains = ["config.test"]\nexecutor = ["executor.mjs"]',
+                    "non-empty JavaScript path",
+                ),
+                (
+                    config,
+                    'domains = ["config.test"]\nexecutor = "missing.js"',
+                    "existing .js or .mjs",
+                ),
+                (
+                    config,
+                    'domains = ["config.test"]\nexecutor = "scenario.toml"',
+                    "existing .js or .mjs",
+                ),
+            ):
+                with self.subTest(definition=definition, filename=filename):
+                    if definition is not None:
+                        config.write_text(definition)
+                    args.scenario = filename
+                    with self.assertRaisesRegex(ValueError, message):
+                        audit(args)
+                    self.assertFalse((root / "runs").exists())
+            config.write_text('domains = ["config.test"]\nexecutor = "executor.mjs"')
+            with patch(
+                "cli.shutil.which",
+                side_effect=lambda name: "node" if name == "node" else None,
+            ):
                 with self.assertRaisesRegex(RuntimeError, "Missing adb"):
                     audit(args)
             with (
@@ -290,40 +335,55 @@ class ScenarioAuditTest(unittest.TestCase):
     def test_completion_failure_and_interrupt_always_emit_report(self):
         # Exercise real proxy/report IO; Android and scenario outcomes are the
         # boundaries here. Native acceptance covers the actual Mobilewright UI.
-        for outcome, state, exit_code in (
-            (None, "scenario completed", 0),
+        for outcome, state, exit_code, override in (
+            (None, "scenario completed", 0, []),
             (
                 RuntimeError("Scenario exited with status 7; see scenario.log"),
                 "failed",
                 1,
+                ["--domain", "localhost"],
             ),
-            (KeyboardInterrupt(), "interrupted by user", 130),
+            (KeyboardInterrupt(), "interrupted by user", 130, []),
         ):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 apk = root / "sample.apk"
                 apk.touch()
-                scenario = root / "browse.mjs"
-                scenario.write_text("export default async function () {}\n")
+                scenario = root / "scenarios with spaces" / "browse.toml"
+                scenario.parent.mkdir()
+                executor = root / ("executor.js" if override else "executor.mjs")
+                source = "export default async function () {}\n"
+                executor.write_text(source)
+                # Relative paths belong to the manifest, not the app or cwd;
+                # absolute executor paths also work, and CLI domains replace.
+                domains = ["config.test"] if override else ["LOCALHOST.", "localhost"]
+                path = str(executor) if override else "../executor.mjs"
+                scenario.write_text(
+                    f"domains = {json.dumps(domains)}\nexecutor = {json.dumps(path)}\n"
+                )
                 args = parser().parse_args(
                     [
                         str(apk),
-                        "--domain",
-                        "localhost",
+                        *override,
                         "--scenario",
                         str(scenario),
                         "--output",
                         str(root / "runs"),
                     ]
                 )
+
+                def execute(path, *, session, **_kwargs):
+                    (session / "scenario.log").write_text(path.read_text())
+                    if outcome:
+                        raise outcome
+
                 output = StringIO()
                 with (
-                    patch("cli.validate_scenario", return_value=scenario),
                     patch("cli.shutil.which", return_value="available"),
                     patch("cli.check_emulator", return_value="test-image"),
                     patch("cli.apk_identity", return_value=("test.app", "Main")),
                     patch("cli.Emulator") as emulator,
-                    patch("cli.run_scenario", side_effect=outcome),
+                    patch("cli.run_scenario", side_effect=execute),
                     redirect_stdout(output),
                 ):
                     emulator.return_value.serial = "emulator-5580"
@@ -336,8 +396,11 @@ class ScenarioAuditTest(unittest.TestCase):
                 (session,) = (root / "runs").iterdir()
                 metadata = json.loads((session / "session.json").read_text())
                 self.assertEqual(metadata["state"], state)
-                self.assertEqual(metadata["scenario"], str(scenario))
+                self.assertEqual(metadata["scenario"], str(scenario.resolve()))
+                self.assertEqual(metadata["executor"], str(executor.resolve()))
+                self.assertEqual(metadata["domains"], ["localhost"])
                 self.assertEqual(metadata["device"], "emulator-5580")
+                self.assertEqual((session / "scenario.log").read_text(), source)
                 self.assertIn(state, (session / "report.html").read_text())
                 self.assertIn(
                     f"Report: {(session / 'report.html').resolve()}",
@@ -441,27 +504,30 @@ await assert.rejects(driver.getViewHierarchy(), /DeviceServer JSON hierarchy/);
         with tempfile.TemporaryDirectory() as directory:
             session = Path(directory)
             module = session / "invalid scenario.mjs"
-            with self.assertRaisesRegex(ValueError, "existing .mjs"):
-                validate_scenario(module)
+            with self.assertRaisesRegex(ValueError, "existing .js or .mjs"):
+                validate_executor(module)
             module.write_text("export default async function ( {\n")
             with self.assertRaisesRegex(RuntimeError, "SyntaxError"):
-                validate_scenario(module)
-            module.write_text("export const wrong = 1;\n")
-            self.assertEqual(validate_scenario(module), module.resolve())
-            with self.assertRaisesRegex(RuntimeError, "status 1"):
-                run_scenario(
-                    module,
-                    serial="not-a-device",
-                    device_id="test-avd",
-                    package="test.app",
-                    session=session,
-                    timeout=10,
-                    check_running=lambda: None,
-                )
-            self.assertIn(
-                "must export default async function",
-                (session / "scenario.log").read_text(),
-            )
+                validate_executor(module)
+            for suffix in (".js", ".mjs"):
+                with self.subTest(suffix=suffix):
+                    module = session / f"invalid scenario{suffix}"
+                    module.write_text("export const wrong = 1;\n")
+                    self.assertEqual(validate_executor(module), module.resolve())
+                    with self.assertRaisesRegex(RuntimeError, "status 1"):
+                        run_scenario(
+                            module,
+                            serial="not-a-device",
+                            device_id="test-avd",
+                            package="test.app",
+                            session=session,
+                            timeout=10,
+                            check_running=lambda: None,
+                        )
+                    self.assertIn(
+                        "must export default async function",
+                        (session / "scenario.log").read_text(),
+                    )
 
     def test_timeout_stops_a_modules_child_process_too(self):
         with tempfile.TemporaryDirectory() as directory:

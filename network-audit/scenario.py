@@ -1,4 +1,4 @@
-"""Run a trusted Mobilewright module against only the audit's Android device."""
+"""Load a scenario definition and run its trusted Mobilewright executor."""
 
 import os
 import shutil
@@ -6,9 +6,11 @@ import signal
 import subprocess
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from android import wait_for
+from domains import normalize_domains
 
 RUNNER = Path(
     os.environ.get(
@@ -18,10 +20,25 @@ RUNNER = Path(
 )
 
 
-def validate_scenario(path):
+def load_scenario(path):
     path = path.resolve()
-    if not path.is_file() or path.suffix != ".mjs":
-        raise ValueError(f"Scenario must be an existing .mjs file: {path}")
+    if not path.is_file() or path.suffix != ".toml":
+        raise ValueError(f"Scenario must be an existing .toml file: {path}")
+    try:
+        config = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"Invalid scenario TOML: {path}: {error}") from error
+    domains = normalize_domains(config.get("domains", []))
+    executor = config.get("executor")
+    if not isinstance(executor, str) or not executor.strip():
+        raise ValueError(f"Scenario executor must be a non-empty JavaScript path: {path}")
+    return domains, validate_executor(path.parent / executor)
+
+
+def validate_executor(path):
+    path = path.resolve()
+    if not path.is_file() or path.suffix not in (".js", ".mjs"):
+        raise ValueError(f"Executor must be an existing .js or .mjs file: {path}")
     if not shutil.which("node"):
         raise RuntimeError("Scenarios need Node.js >=22.12. Use devenv or the Nix package.")
     checks = (
@@ -29,7 +46,7 @@ def validate_scenario(path):
             ["node", str(RUNNER), "--check"],
             "Scenario runtime unavailable. Re-enter devenv or rebuild the Nix package.",
         ),
-        (["node", "--check", str(path)], f"Invalid scenario syntax: {path}"),
+        (["node", "--check", str(path)], f"Invalid executor syntax: {path}"),
     )
     for command, message in checks:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)

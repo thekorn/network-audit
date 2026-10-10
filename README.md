@@ -155,10 +155,15 @@ executor = "browse.mjs"
 Executor paths resolve relative to the TOML file. The CLI no longer reads an
 app-wide `network-audit.toml`; manual runs use `--domain`, which can also override
 a scenario's domain list. Scenarios are validated against a bundled JSON Schema
-before the audit starts: `executor` is required, `domains` is optional, and
-unknown fields are rejected. Omit `domains` to capture all HTTP(S) requests
+before the audit starts: `executor` is required, `domains` and `env-file` are
+optional, and unknown fields are rejected. Omit `domains` to capture all HTTP(S) requests
 reaching the proxy across the dedicated emulator; an explicitly empty list is
 invalid.
+
+For Flutter builds, a scenario can set `env-file = "../config/dev.json"` (or a
+`.env` file), resolved relative to the TOML file. This replaces the need to pass
+`--dart-define-from-file`; if you do pass the flag, its files replace the scenario
+default. See [Flutter environment values](network-audit/README.md#flutter-environment-values).
 
 The sample scrolls and refreshes the product feed, opens BUNTE, accepts consent,
 scrolls the WebView and waits five seconds, then prints the report. Before the

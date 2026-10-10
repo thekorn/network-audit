@@ -10,6 +10,11 @@
       "type": "string",
       "pattern": "\\S"
     },
+    "env-file": {
+      "description": "Flutter JSON or .env define file; relative paths resolve beside the scenario TOML. CLI --dart-define-from-file options replace this default.",
+      "type": "string",
+      "pattern": "\\S"
+    },
     "domains": {
       "description": "Exact hostnames or *.hostname filters. Omit to capture all HTTP(S) requests.",
       "type": "array",

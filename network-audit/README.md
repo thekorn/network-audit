@@ -90,6 +90,23 @@ before the build; malformed file contents fail in Flutter before an emulator
 session starts. Prebuilt APKs reject the option because their compiled values
 cannot be changed.
 
+For scenario runs, set an optional `env-file` instead of passing the flag:
+
+```toml
+executor = "browse.mjs"
+domains = ["api.example.com"]
+env-file = "../config/dev.json"
+```
+
+`env-file` names one JSON or `.env` file. Relative paths resolve beside the
+scenario TOML, like `executor`; absolute paths also work. Explicit
+`--dart-define-from-file` options **replace** this default rather than layering
+onto it. Only the selected files must exist, so a CLI override can replace a
+scenario default that is absent locally. The `env-file` field must still be a
+non-blank string even when overridden. This is the same Flutter compile-time
+configuration, not environment variables for the JavaScript executor; it also
+requires a Flutter project rather than a prebuilt APK.
+
 Keep private configuration files out of version control. These values are
 embedded in the APK, so do not treat Dart defines as secret storage.
 
@@ -123,8 +140,9 @@ Select it with `--scenario sample-app/scenarios/browse.toml`. Before checking th
 runtime, building the app or creating a session, the CLI validates the parsed
 TOML against the bundled [JSON Schema](scenario.schema.json). `executor` is
 required and must name a trusted JavaScript file (`.js` or `.mjs`). `domains` is
-optional; when present, it must be a non-empty list of hostnames. Unknown fields
-are rejected so a typo cannot silently turn off filtering.
+optional; when present, it must be a non-empty list of hostnames. The optional
+`env-file` selects [Flutter environment values](#flutter-environment-values).
+Unknown fields are rejected so a typo cannot silently turn off filtering.
 
 To capture all HTTP(S) requests reaching the proxy, omit `domains` entirely:
 

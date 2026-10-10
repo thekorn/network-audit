@@ -102,16 +102,6 @@ def audit(args):
     app = args.app.resolve()
     if not app.exists():
         raise ValueError(f"App not found: {app}")
-    if args.dart_define_from_file and not app.is_dir():
-        raise ValueError("--dart-define-from-file requires a Flutter project, not an APK")
-    define_files = [
-        Path(path).resolve()
-        for value in args.dart_define_from_file
-        for path in value.split(",")
-    ]
-    for path in define_files:
-        if not path.is_file():
-            raise ValueError(f"Dart define file not found or not a file: {path}")
     if (
         not math.isfinite(args.close_grace)
         or args.close_grace <= 0
@@ -122,12 +112,28 @@ def audit(args):
         raise ValueError("--scenario-timeout must be positive and finite")
     scenario = args.scenario.resolve() if args.scenario else None
     if scenario:
-        domains, executor = load_scenario(scenario)
-        if args.domain is not None:
-            domains = normalize_domains(args.domain)
+        domains, executor, env_file = load_scenario(scenario)
     else:
-        domains = normalize_domains(args.domain or [])
+        domains = None
         executor = None
+        env_file = None
+    define_files = [
+        Path(path).resolve()
+        for value in args.dart_define_from_file
+        for path in value.split(",")
+    ]
+    if not define_files and env_file is not None:
+        define_files = [env_file]
+    if define_files and not app.is_dir():
+        raise ValueError(
+            "Dart define configuration (--dart-define-from-file or scenario env-file) "
+            "requires a Flutter project, not an APK"
+        )
+    for path in define_files:
+        if not path.is_file():
+            raise ValueError(f"Dart define file not found or not a file: {path}")
+    if args.domain is not None or not scenario:
+        domains = normalize_domains(args.domain or [])
     flutter = ["fvm", "flutter"] if args.use_fvm else ["flutter"]
     for tool in (
         "adb",

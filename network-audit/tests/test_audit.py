@@ -163,7 +163,15 @@ class AuditSessionTest(unittest.TestCase):
     def test_flutter_build_uses_selected_executable_in_project_directory(self):
         for (options, tool, prefix), define_mode in product(
             (([], "flutter", []), (["--use-fvm"], "fvm", ["flutter"])),
-            ("none", "single", "repeated", "comma-separated"),
+            (
+                "none",
+                "single",
+                "repeated",
+                "comma-separated",
+                "scenario-relative",
+                "scenario-absolute",
+                "scenario-override",
+            ),
         ):
             with (
                 self.subTest(tool=tool, define_mode=define_mode),
@@ -201,7 +209,29 @@ class AuditSessionTest(unittest.TestCase):
                             f"--dart-define-from-file={override}",
                         ],
                     ),
+                    "scenario-relative": ([], [f"--dart-define-from-file={base}"]),
+                    "scenario-absolute": ([], [f"--dart-define-from-file={base}"]),
+                    "scenario-override": (
+                        [f"--dart-define-from-file={override.name}"],
+                        [f"--dart-define-from-file={override}"],
+                    ),
                 }[define_mode]
+                scenario_options = []
+                if define_mode.startswith("scenario-"):
+                    scenario = root / "scenarios with spaces" / "browse.toml"
+                    scenario.parent.mkdir()
+                    (scenario.parent / "browse.mjs").write_text(
+                        "export default async function () {}\n"
+                    )
+                    env_file = str(base) if define_mode == "scenario-absolute" else f"../{base.name}"
+                    scenario.write_text(
+                        f'executor = "browse.mjs"\nenv-file = {json.dumps(env_file)}\n'
+                    )
+                    scenario_options = ["--scenario", str(scenario)]
+                    if define_mode == "scenario-override":
+                        # An explicit CLI file replaces, not layers onto, the
+                        # default, even if that default is absent locally.
+                        base.unlink()
                 bin_dir = root / "bin"
                 bin_dir.mkdir()
                 executable = bin_dir / tool
@@ -227,11 +257,15 @@ class AuditSessionTest(unittest.TestCase):
                         str(root / "runs"),
                         *options,
                         *define_options,
+                        *scenario_options,
                     ]
                 )
                 with (
                     chdir(root),
-                    patch.dict(os.environ, {"PATH": str(bin_dir)}),
+                    patch.dict(
+                        os.environ,
+                        {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                    ),
                     patch("cli.check_emulator", return_value="test-image"),
                     self.assertRaises(subprocess.CalledProcessError) as failure,
                 ):
@@ -317,6 +351,24 @@ class AuditSessionTest(unittest.TestCase):
                         "Dart define file not found or not a file",
                     )
                 )
+            (root / "executor.mjs").write_text("export default async function () {}\n")
+            for name, env_file in (("missing", "missing.env"), ("directory", ".")):
+                scenario = root / f"{name}.toml"
+                scenario.write_text(
+                    f'executor = "executor.mjs"\nenv-file = {json.dumps(env_file)}\n'
+                )
+                cases.extend(
+                    [
+                        (
+                            [str(root), "--scenario", str(scenario)],
+                            "Dart define file not found or not a file",
+                        ),
+                        (
+                            [str(apk), "--scenario", str(scenario)],
+                            "requires a Flutter project, not an APK",
+                        ),
+                    ]
+                )
             for option, values in (
                 ("--close-grace", ["0", "-1", "nan", "inf"]),
                 ("--body-limit", ["0", "-1"]),
@@ -340,6 +392,8 @@ class AuditSessionTest(unittest.TestCase):
             config = root / "scenario.toml"
             module = root / "executor.mjs"
             module.write_text("export default async function () {}\n")
+            defines = root / "override.json"
+            defines.write_text('{"API_URL": "https://override.test"}')
             args = parser().parse_args(
                 [str(root), "--scenario", str(config), "--output", str(root / "runs")]
             )
@@ -361,6 +415,26 @@ class AuditSessionTest(unittest.TestCase):
                     "executor: .*not of type 'string'",
                 ),
                 (config, "executor = 123", "executor: .*not of type 'string'"),
+                (
+                    config,
+                    'executor = "executor.mjs"\nenv-file = ""',
+                    "env-file: .*does not match",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nenv-file = "  "',
+                    "env-file: .*does not match",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nenv-file = 123',
+                    "env-file: .*not of type 'string'",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nenv-file = ["dev.json"]',
+                    "env-file: .*not of type 'string'",
+                ),
                 (
                     config,
                     'executor = "executor.mjs"\ndomains = []',
@@ -409,6 +483,7 @@ class AuditSessionTest(unittest.TestCase):
                     # A CLI override must not hide an invalid TOML definition.
                     for override in (None, ["override.test"]):
                         args.domain = override
+                        args.dart_define_from_file = [str(defines)] if override else []
                         with self.assertRaisesRegex(ValueError, message):
                             audit(args)
                     self.assertFalse((root / "runs").exists())

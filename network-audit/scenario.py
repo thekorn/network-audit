@@ -40,7 +40,8 @@ def load_scenario(path):
             f"Invalid scenario schema: {path}: {field}: {error.message}"
         ) from error
     domains = normalize_domains(config["domains"]) if "domains" in config else None
-    return domains, validate_executor(path.parent / config["executor"])
+    env_file = (path.parent / config["env-file"]).resolve() if "env-file" in config else None
+    return domains, validate_executor(path.parent / config["executor"]), env_file
 
 
 def validate_executor(path):

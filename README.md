@@ -5,6 +5,9 @@ Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
 sends ten GET requests per batch and an Android WebView loading BUNTE.
 
+Start with [What does your Android app actually send?](docs/network-audit.md),
+a Nix-first walkthrough using the sample app, screenshots, and a short recording.
+
 ## Install or run with Nix
 
 On **x86_64 Linux with readable/writable `/dev/kvm`** or **Apple Silicon macOS**,

@@ -129,6 +129,22 @@ responses matching `*.bunte.de` and `dummyjson.com` print as they happen. Visit
 both app tabs, then close/leave the app for five seconds or press Ctrl+C.
 The emulator and proxy stop and the command prints the HTML report path.
 
+To try the experimental Mobilewright scenario instead of interacting manually:
+
+```bash
+devenv shell audit sample-app --scenario sample-app/scenarios/browse.mjs
+```
+
+The sample scrolls and refreshes the product feed, opens BUNTE, accepts consent,
+scrolls the WebView and waits five seconds, then prints the report. The complete
+scenario is verified on an Apple Silicon Mac with a fresh Android 36 emulator,
+including twenty successful product GETs (two per product). macOS uses loopback
+TCP for ADB and native Android accessibility instead of Mobilecli's Flutter tree,
+which omits WebView consent controls. The Linux path is unchanged and was not
+retested with this macOS fix. Failures still produce a partial report.
+Use `--headless` to hide the emulator window. Scenarios are trusted local `.mjs`
+code; see [scenario usage and failure handling](network-audit/README.md#experimental-mobilewright-scenarios).
+
 Reports contain searchable exchanges, request/response headers and body previews,
 host counts, durations, HTTP errors, incomplete requests and TLS diagnostics.
 All data stays in the private, ignored `.network-audit/runs/<session>/` directory.

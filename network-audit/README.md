@@ -86,6 +86,121 @@ The device serial is printed and written to the session metadata. In headless
 mode, use `adb -s <serial> shell input keyevent KEYCODE_HOME` to leave the app
 and finish the audit, or press Ctrl+C.
 
+## Experimental Mobilewright scenarios
+
+Devenv and both flake packages automatically provide Node.js and the same
+lockfile-pinned Mobilewright runtime. Nix runs `npm ci` during the runtime build
+and caches the result; no manual npm installation or checkout-local
+`node_modules` is required. In a devenv shell or with the installed Nix command:
+
+```sh
+network-audit sample-app --scenario sample-app/scenarios/browse.mjs
+# Hide the emulator window and bound the scenario to two minutes:
+network-audit sample-app --headless --scenario sample-app/scenarios/browse.mjs --scenario-timeout 120
+```
+
+Or run a scenario directly with the full flake package on a supported host:
+
+```sh
+nix run . -- /path/to/app.apk --domain api.example.com --scenario /path/to/scenario.mjs
+```
+
+The same disposable emulator, capture setup and HTML report are used. The CLI
+launches the app first, then Mobilewright attaches without restarting it.
+Mobilecli identifies an emulator transport by its unique AVD name on Linux,
+or by its loopback TCP serial on macOS.
+A scenario's completion ends capture automatically;
+`--close-grace` does not apply in scenario mode, so system dialogs or temporary
+app switches do not end an automated run. The timeout defaults to 300 seconds
+starting after app launch, including module loading and Mobilewright connection.
+There is no implicit delay after completion: await any desired capture window
+in the scenario itself.
+
+The sample waits for ten successful product requests, scrolls down the feed,
+returns to **Run 10 GETs again** and refreshes it, opens BUNTE, accepts its consent,
+declines the optional push-notification prompt if it appears within ten seconds,
+scrolls the WebView twice and waits five seconds. It deliberately fails if a
+product batch fails or the expected consent button cannot be found; it never
+silently skips consent. BUNTE is a live external site, so its wording, prompts
+and availability can change. Accepting consent allows the site's advertising
+and tracking in this disposable emulator.
+
+**Acceptance status:** the unchanged sample completed on fresh Android 36 ARM64
+emulators on macOS, including a repeat using the root README's
+`devenv shell audit` command. Captures contain twenty successful product GETs
+(two per product); the final screenshot shows BUNTE content after consent and
+WebView scrolling.
+The macOS runner uses native Android accessibility throughout the scenario,
+rather than Mobilecli's Flutter render tree. The Linux driver and transport are
+unchanged and were not retested for this fix. Earlier x86_64 verification reached
+consent but failed with `error: device offline`; this macOS verification does not
+resolve or retest that earlier Linux failure.
+
+Scenarios are **trusted local code**, not a sandboxed data format. Only run files
+you trust: they inherit your host environment and can access files and network.
+Use `.mjs` ES modules exporting one async function. Paths resolve relative to
+your current working directory, not the app directory. For example:
+
+```js
+// my-scenario.mjs
+import { setTimeout as wait } from 'node:timers/promises';
+
+export default async function ({ screen, expect }) {
+  await expect(screen.getByRole('button', { name: /^Products/ })).toBeVisible();
+  await screen.swipe('up');
+  await wait(5_000);
+}
+```
+
+`device`, `screen`, and `expect` come from [Mobilewright](https://github.com/mobile-next/mobilewright);
+`packageName` is read from the APK and `sessionDirectory` is the absolute private
+output directory. `serial` is the owned ADB transport serial, whereas `device.id`
+is the unique AVD name on Linux or that same TCP serial on macOS.
+The runner owns device connection and cleanup; do not launch
+another device or call `process.exit()`. Await all actions. Throw an error or
+let an assertion fail to mark the run failed. You do not need to import
+Mobilewright in scenario files; the context avoids module-resolution problems
+for files outside this repository. Other imports use normal Node resolution
+relative to your scenario. This is not the Mobilewright/Playwright test-runner
+format (`test(...)`); TypeScript compilation and test-runner fixtures are not
+included in this experiment.
+
+Scenario stdout/stderr go to `scenario.log` beside the report. Exit status is 0
+on completion, 1 on failure/timeout, and 130 on interruption. Failures after the
+session starts still print a partial report, whose status and diagnostics show
+the failure; input/dependency preflight errors occur before creating a session.
+The Node process group and its mobilecli children are stopped before emulator
+and proxy cleanup. Each run uses a private `MOBILECLI_HOME`, an owned foreground
+daemon and a separate mobilecli WebSocket port, not its shared default daemon
+or server. Like manual captures, pending network responses may be incomplete
+at shutdown, and a successful scenario does not imply all HTTP responses succeeded.
+
+Both environments provide Node.js 24; Mobilewright requires Node >=22.12. The
+runtime lives in the immutable Nix store, not in the checkout. Re-enter devenv
+after editing the runner or its dependency manifests to select the rebuilt
+runtime. No packages are downloaded or installed by `--scenario` itself.
+Native Android verification requires the same supported emulator host as manual
+mode. WebView DOM APIs additionally need a debuggable WebView; the sample uses
+native accessibility for cross-origin consent buttons because Mobilewright
+0.0.64 does not implement `frameLocator`.
+
+Mobilecli 1.0.18's injected Android in-app agent is ARM64-only: its
+[build selects AArch64](https://github.com/mobile-next/mobilecli/blob/1.0.18/agents/android/Makefile#L17-L23),
+and its [installer uses one embedded library without ABI selection](https://github.com/mobile-next/mobilecli/blob/1.0.18/devices/android_webview.go#L144-L169).
+On the x86_64 emulator, injection fails with `EM_AARCH64 (183) instead of
+EM_X86_64 (62)`. Features needing that helper, including WebView Page attachment,
+are unavailable there; native accessibility actions can still work. The sample
+does not build a custom helper or fork Mobilecli to bypass this limitation.
+
+Mobilecli's Flutter VM render-tree mode does not merge WebView accessibility
+nodes and can expose offscreen Flutter widgets as actionable. On macOS the runner
+therefore reads Mobilecli's raw Android DeviceServer hierarchy for every native
+locator, preserving WebView children, accessibility labels and resource IDs.
+Use those native selectors rather than Flutter-only widget keys on macOS.
+The adapter reuses the run's private Mobilecli daemon and fails explicitly if
+the native JSON hierarchy is unavailable; it does not fall back to Flutter or
+hard-coded coordinate taps. Linux keeps Mobilewright's default driver.
+
 ## Output and safety
 
 Each run creates `.network-audit/runs/<UTC timestamp>-<unique suffix>/` with mode
@@ -108,6 +223,8 @@ with a private umask:
 - `session.json`, `emulator.log`, `proxy.log`: session state and diagnostics.
   mitmproxy's console warnings and the captured traffic print to the terminal;
   `proxy.log` contains its stderr.
+- `scenario.log` (automated runs): scenario progress, assertion failures and
+  Mobilewright errors. The scenario path and timeout are in `session.json`.
 
 Text bodies are decoded (including compression). The terminal and HTML preview
 limit defaults to 1 MiB of wire bytes / 1 Mi characters of decoded text per
@@ -167,6 +284,13 @@ its tests in standard mode, using the Python version and dependencies supplied
 by the pinned devenv environment. Inside `devenv shell`, run `pyright` directly;
 for editor checks, launch the editor from that shell and select its `python3`
 interpreter so Jinja2 and mitmproxy imports resolve.
+
+Both test commands exercise real Node subprocess failures and
+timeout/process-group cleanup using the Nix-built runtime, without a device.
+The flake also checks scenario preflight through its installed CLI with an
+empty caller environment, outside the source tree.
+Audit lifecycle tests use real mitmproxy/report IO with Android and scenario
+outcomes substituted; they are not native UI verification.
 
 The tests use real mitmdump and local HTTP/TLS servers. They check hostname
 boundaries, compressed responses, repeated headers, binary POSTs, upstream

@@ -41,7 +41,13 @@ def load_scenario(path):
         ) from error
     domains = normalize_domains(config["domains"]) if "domains" in config else None
     env_file = (path.parent / config["env-file"]).resolve() if "env-file" in config else None
-    return domains, validate_executor(path.parent / config["executor"]), env_file
+    # JSON Schema accepts integral floats too; write canonical integers to the AVD.
+    dimensions = (
+        {key: int(value) for key, value in config["dimensions"].items()}
+        if "dimensions" in config
+        else None
+    )
+    return domains, validate_executor(path.parent / config["executor"]), env_file, dimensions
 
 
 def validate_executor(path):

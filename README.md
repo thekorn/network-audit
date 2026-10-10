@@ -150,15 +150,21 @@ executor. The sample's `sample-app/scenarios/browse.toml` contains:
 ```toml
 domains = ["*.bunte.de", "dummyjson.com"]
 executor = "browse.mjs"
+dimensions = { width = 1280, height = 2856, density = 480 }
 ```
 
 Executor paths resolve relative to the TOML file. The CLI no longer reads an
 app-wide `network-audit.toml`; manual runs use `--domain`, which can also override
 a scenario's domain list. Scenarios are validated against a bundled JSON Schema
-before the audit starts: `executor` is required, `domains` and `env-file` are
-optional, and unknown fields are rejected. Omit `domains` to capture all HTTP(S) requests
-reaching the proxy across the dedicated emulator; an explicitly empty list is
-invalid.
+before the audit starts: `executor` is required; `domains`, `env-file`, and
+`dimensions` are optional, and unknown fields are rejected. Omit `domains` to
+capture all HTTP(S) requests reaching the proxy across the dedicated emulator;
+an explicitly empty list is invalid.
+
+`dimensions` configures the fresh emulator before boot: width and height are
+pixels, density is dpi. All three values are required positive integers, and
+width must be even. Omit it to keep the emulator defaults. It applies to both
+windowed and headless runs without changing any existing AVD.
 
 For Flutter builds, a scenario can set `env-file = "../config/dev.json"` (or a
 `.env` file), resolved relative to the TOML file. This replaces the need to pass

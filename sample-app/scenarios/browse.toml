@@ -1,2 +1,3 @@
 domains = ["*.bunte.de", "dummyjson.com"]
 executor = "browse.mjs"
+dimensions = { width = 1280, height = 2856, density = 480 }

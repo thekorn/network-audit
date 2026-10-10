@@ -26,7 +26,7 @@ from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
-from scenario import RUNNER, run_scenario, validate_executor
+from scenario import RUNNER, load_scenario, run_scenario, validate_executor
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -502,6 +502,54 @@ class AuditSessionTest(unittest.TestCase):
                 audit(args)
             self.assertFalse((root / "runs").exists())
 
+    def test_invalid_dimensions_fail_before_build_or_session_creation(self):
+        valid = {"width": 1280, "height": 2856, "density": 480}
+        cases = [
+            ('"1280x2856"', "dimensions: .*not of type 'object'"),
+            ("{}", "dimensions: .*required property"),
+            (
+                "{ width = 1280, height = 2856, density = 480, dpi = 480 }",
+                "dimensions: .*Additional properties.*dpi",
+            ),
+        ]
+        for field in valid:
+            for value in ("0", "-2", "1.5", '"480"', "true"):
+                fields = {key: str(number) for key, number in valid.items()}
+                fields[field] = value
+                cases.append(
+                    (
+                        "{ " + ", ".join(f"{k} = {v}" for k, v in fields.items()) + " }",
+                        rf"dimensions\.{field}:",
+                    )
+                )
+            fields = {key: number for key, number in valid.items() if key != field}
+            cases.append(
+                (
+                    "{ " + ", ".join(f"{k} = {v}" for k, v in fields.items()) + " }",
+                    f"dimensions: .*'{field}' is a required property",
+                )
+            )
+        cases.append(
+            (
+                "{ width = 1279, height = 2856, density = 480 }",
+                "dimensions.width: .*not a multiple of 2",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "scenario.toml"
+            args = parser().parse_args(
+                [str(root), "--scenario", str(config), "--output", str(root / "runs")]
+            )
+            for definition, message in cases:
+                with self.subTest(dimensions=definition):
+                    config.write_text(
+                        f'executor = "executor.mjs"\ndimensions = {definition}\n'
+                    )
+                    with self.assertRaisesRegex(ValueError, message):
+                        audit(args)
+                    self.assertFalse((root / "runs").exists())
+
 
 class AndroidOutputTest(unittest.TestCase):
     def test_apk_identity_requires_safe_package_and_launcher_names(self):
@@ -926,7 +974,11 @@ def create_avd(args, **kwargs):
     name = args[args.index("--name") + 1]
     config = Path(kwargs["env"]["ANDROID_AVD_HOME"]) / f"{name}.avd" / "config.ini"
     config.parent.mkdir(parents=True)
-    config.write_text("hw.ramSize=2048\ndisk.dataPartition.size=12G\n")
+    config.write_text(
+        "hw.ramSize=2048\ndisk.dataPartition.size=12G\n"
+        "hw.lcd.width=320\nhw.lcd.height=640\nhw.lcd.density=160\n"
+        "skin.name=HVGA\n"
+    )
     return ""
 
 
@@ -1011,25 +1063,71 @@ class EmulatorPreflightTest(unittest.TestCase):
                     self.assertEqual(emulator.serial, console)
                     self.assertEqual(emulator.device_id, Path(directory).name)
 
-    def test_start_limits_storage_for_the_unique_avd(self):
-        with tempfile.TemporaryDirectory(prefix="network-audit-") as directory:
-            device = Emulator(directory, None, 8080, True, "test-image")
-
+    def test_scenario_dimensions_are_applied_before_emulator_boot(self):
+        for definition, expected_display, skin in (
+            ("", ("320", "640", "160"), None),
+            (
+                "dimensions = { width = 1280, height = 2856, density = 480 }",
+                ("1280", "2856", "480"),
+                "1280x2856",
+            ),
+            (
+                "[dimensions]\nwidth = 1920\nheight = 1080\ndensity = 320",
+                ("1920", "1080", "320"),
+                "1920x1080",
+            ),
+            (
+                "dimensions = { width = 720.0, height = 1600.0, density = 240.0 }",
+                ("720", "1600", "240"),
+                "720x1600",
+            ),
+        ):
             with (
-                patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
-                patch("android.run", side_effect=create_avd),
-                patch("android.subprocess.Popen"),
-                patch("android.wait_for"),
-                patch.object(device, "adb", return_value="OK"),
-                patch.object(device, "shell"),
+                self.subTest(dimensions=definition),
+                tempfile.TemporaryDirectory(prefix="network-audit-") as directory,
             ):
-                device.start()
+                root = Path(directory)
+                scenario = root / "scenario.toml"
+                scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
+                (root / "executor.mjs").write_text("export default async function () {}\n")
+                _, _, _, dimensions = load_scenario(scenario)
+                device = Emulator(
+                    directory, None, 8080, True, "test-image", dimensions=dimensions
+                )
 
-            config = Path(directory) / "avd" / f"{device.name}.avd" / "config.ini"
-            self.assertEqual(
-                dict(line.split("=", 1) for line in config.read_text().splitlines()),
-                {"hw.ramSize": "2048", "disk.dataPartition.size": "6G"},
-            )
+                def launch(command, **kwargs):
+                    config = root / "avd" / f"{device.name}.avd" / "config.ini"
+                    entries = [
+                        line.split("=", 1) for line in config.read_text().splitlines()
+                    ]
+                    settings = dict(entries)
+                    self.assertEqual(len(entries), len(settings), "Duplicate AVD settings")
+                    self.assertEqual(
+                        settings,
+                        {
+                            "hw.ramSize": "2048",
+                            "disk.dataPartition.size": "6G",
+                            "hw.lcd.width": expected_display[0],
+                            "hw.lcd.height": expected_display[1],
+                            "hw.lcd.density": expected_display[2],
+                            "skin.name": "HVGA",
+                        },
+                    )
+                    if skin is None:
+                        self.assertNotIn("-skin", command)
+                    else:
+                        self.assertEqual(command[command.index("-skin") + 1], skin)
+                    return Mock()
+
+                with (
+                    patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
+                    patch("android.run", side_effect=create_avd),
+                    patch("android.subprocess.Popen", side_effect=launch),
+                    patch("android.wait_for"),
+                    patch.object(device, "adb", return_value="OK"),
+                    patch.object(device, "shell"),
+                ):
+                    device.start()
 
     def test_launch_accepts_first_draw_timeout_but_rejects_start_errors(self):
         emulator = Emulator("/unused", None, 8080, True, "test-image")

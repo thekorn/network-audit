@@ -134,6 +134,7 @@ Each automated scenario has its own TOML entry point, for example
 ```toml
 domains = ["*.bunte.de", "dummyjson.com"]
 executor = "browse.mjs"
+dimensions = { width = 1280, height = 2856, density = 480 }
 ```
 
 Select it with `--scenario sample-app/scenarios/browse.toml`. Before checking the
@@ -143,6 +144,22 @@ required and must name a trusted JavaScript file (`.js` or `.mjs`). `domains` is
 optional; when present, it must be a non-empty list of hostnames. The optional
 `env-file` selects [Flutter environment values](#flutter-environment-values).
 Unknown fields are rejected so a typo cannot silently turn off filtering.
+
+The optional `dimensions` sets the disposable emulator's display **before boot**,
+so both the app and executor start with the requested size. `width` and `height`
+are pixels, and `density` is dpi. All three are required positive integers;
+the emulator requires an even width. Omit `dimensions` to keep the emulator
+defaults. It works with both windowed and `--headless` runs and does not change
+any existing AVD. A regular TOML table is equivalent to the inline form above:
+
+```toml
+executor = "browse.mjs"
+
+[dimensions]
+width = 1280
+height = 2856
+density = 480
+```
 
 To capture all HTTP(S) requests reaching the proxy, omit `domains` entirely:
 

@@ -104,7 +104,9 @@ def emulator_port():
 
 
 class Emulator:
-    def __init__(self, temporary, log, proxy_port, headless, system_image):
+    def __init__(
+        self, temporary, log, proxy_port, headless, system_image, *, dimensions=None
+    ):
         self.root = Path(temporary)
         # mobilecli identifies emulators by AVD name, not their ADB serial.
         # The owned temporary directory gives concurrent runs distinct names.
@@ -113,6 +115,7 @@ class Emulator:
         self.proxy_port = proxy_port
         self.headless = headless
         self.system_image = system_image
+        self.dimensions = dimensions
         self.process = None
         self.port = emulator_port()
         self.serial = f"emulator-{self.port}"
@@ -148,12 +151,17 @@ class Emulator:
             timeout=120,
         )
         config = Path(env["ANDROID_AVD_HOME"]) / f"{self.name}.avd" / "config.ini"
+        overrides = {"disk.dataPartition.size": f"{DATA_PARTITION_GIB}G"}
+        if self.dimensions is not None:
+            overrides.update(
+                {f"hw.lcd.{key}": str(value) for key, value in self.dimensions.items()}
+            )
         lines = [
             line
             for line in config.read_text().splitlines()
-            if line.split("=", 1)[0].strip() != "disk.dataPartition.size"
+            if line.split("=", 1)[0].strip() not in overrides
         ]
-        lines.append(f"disk.dataPartition.size={DATA_PARTITION_GIB}G")
+        lines.extend(f"{key}={value}" for key, value in overrides.items())
         config.write_text("\n".join(lines) + "\n")
         command = [
             "emulator",
@@ -171,6 +179,11 @@ class Emulator:
             "-http-proxy",
             f"http://127.0.0.1:{self.proxy_port}",
         ]
+        if self.dimensions is not None:
+            # A named skin can override LCD dimensions; use a matching numeric skin.
+            command.extend(
+                ["-skin", f"{self.dimensions['width']}x{self.dimensions['height']}"]
+            )
         if self.headless:
             command.append("-no-window")
         process = self.process = subprocess.Popen(

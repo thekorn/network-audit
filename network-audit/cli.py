@@ -112,11 +112,12 @@ def audit(args):
         raise ValueError("--scenario-timeout must be positive and finite")
     scenario = args.scenario.resolve() if args.scenario else None
     if scenario:
-        domains, executor, env_file = load_scenario(scenario)
+        domains, executor, env_file, dimensions = load_scenario(scenario)
     else:
         domains = None
         executor = None
         env_file = None
+        dimensions = None
     define_files = [
         Path(path).resolve()
         for value in args.dart_define_from_file
@@ -264,7 +265,12 @@ def audit(args):
 
                 wait_for(proxy_ready, "mitmproxy", timeout=30)
                 emulator = Emulator(
-                    temporary, emulator_log, port, args.headless, system_image
+                    temporary,
+                    emulator_log,
+                    port,
+                    args.headless,
+                    system_image,
+                    dimensions=dimensions,
                 )
                 print("Booting a disposable Android API 36 emulator…", flush=True)
                 emulator_process = emulator.start()

@@ -80,6 +80,11 @@ in
       network-audit --help
       pyright
       python3 -m unittest discover -s network-audit/tests -v
+      (
+        cd sample-app
+        flutter analyze
+        flutter test
+      )
       test -f "$ANDROID_HOME/platforms/android-36/android.jar"
       test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
       test -f "$ANDROID_NDK_ROOT/source.properties"

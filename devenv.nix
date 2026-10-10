@@ -46,6 +46,7 @@ in
       android.platform-tools
       python
       pkgs.mitmproxy
+      pkgs.pyright
       pkgs.openssl
     ];
 
@@ -75,6 +76,7 @@ in
       adb version
       mitmdump --version
       network-audit --help
+      pyright
       python3 -m unittest discover -s network-audit/tests -v
       test -f "$ANDROID_HOME/platforms/android-36/android.jar"
       test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"

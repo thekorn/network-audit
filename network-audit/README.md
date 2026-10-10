@@ -108,10 +108,19 @@ network-audit report .network-audit/runs/<session>
 
 ## Checks
 
+From the repository root:
+
 ```sh
 devenv test
+devenv shell pyright
 python3 -m unittest discover -s network-audit/tests -v
 ```
+
+`devenv test` includes Pyright and the Python tests. Pyright checks the tool and
+its tests in standard mode, using the Python version and dependencies supplied
+by the pinned devenv environment. Inside `devenv shell`, run `pyright` directly;
+for editor checks, launch the editor from that shell and select its `python3`
+interpreter so Jinja2 and mitmproxy imports resolve.
 
 The tests use real mitmdump and local HTTP/TLS servers. They check hostname
 boundaries, compressed responses, repeated headers, binary POSTs, upstream

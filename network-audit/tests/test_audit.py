@@ -91,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
             # may already have an idle origin connection for certificate lookup.
             pass
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):
         pass
 
     def do_GET(self):

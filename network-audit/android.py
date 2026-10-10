@@ -89,12 +89,12 @@ class Emulator:
         ]
         if self.headless:
             command.append("-no-window")
-        self.process = subprocess.Popen(
+        process = self.process = subprocess.Popen(
             command, env=env, stdout=self.log, stderr=self.log, start_new_session=True
         )
 
         def booted():
-            if self.process.poll() is not None:
+            if process.poll() is not None:
                 raise RuntimeError("Emulator exited during boot; see emulator.log")
             try:
                 return self.shell("getprop sys.boot_completed") == "1"
@@ -123,6 +123,7 @@ class Emulator:
         self.shell("iptables -I OUTPUT -p udp --dport 443 -j REJECT")
         self.shell("ip6tables -I OUTPUT -p udp --dport 443 -j REJECT")
         self.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")
+        return process
 
     def install_ca(self, certificate):
         digest = run(

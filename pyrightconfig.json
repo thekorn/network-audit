@@ -1,0 +1,5 @@
+{
+  "include": ["network-audit"],
+  "typeCheckingMode": "standard",
+  "executionEnvironments": [{ "root": "network-audit" }]
+}

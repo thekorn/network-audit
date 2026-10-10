@@ -195,7 +195,7 @@ def audit(args):
                 wait_for(proxy_ready, "mitmproxy", timeout=30)
                 emulator = Emulator(temporary, emulator_log, port, args.headless)
                 print("Booting a disposable Android API 36 emulator…", flush=True)
-                emulator.start()
+                emulator_process = emulator.start()
                 emulator.install_ca(ca_dir / "mitmproxy-ca-cert.pem")
                 metadata["device"] = emulator.serial
                 save()
@@ -217,7 +217,7 @@ def audit(args):
                         raise RuntimeError(
                             "mitmdump stopped unexpectedly; see proxy.log"
                         )
-                    if emulator.process.poll() is not None:
+                    if emulator_process.poll() is not None:
                         metadata["state"] = "emulator closed"
                         break
                     if emulator.foreground(package):

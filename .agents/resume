@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Everything is on disk in the snapshot. No installs, ADB daemon, emulator,
+# user authentication or long-running processes belong in this hook.
+if [[ ! -x "$HOME/.nix-profile/bin/nix" || ! -x "$HOME/.local/share/network-audit/devenv/bin/devenv" ]]; then
+  printf 'The orb toolchain is missing; run .agents/setup.\n' >&2
+  exit 1
+fi

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+export NETWORK_AUDIT_SKIP_ACTIVATION=1
+export CI=true
+
+step() {
+  local label="$1" started=$SECONDS
+  shift
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '==> %s: %ss\n' "$label" "$((SECONDS - started))"
+}
+
+install_prerequisites() {
+  local package missing=()
+  for package in ca-certificates curl xz-utils bzip2 git unzip jq; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+      missing+=("$package")
+    fi
+  done
+  if ((${#missing[@]})); then
+    sudo apt-get update
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+
+install_nix() {
+  if [[ ! -x "$HOME/.nix-profile/bin/nix" ]]; then
+    local installer
+    installer="$(mktemp)"
+    curl --fail --silent --show-error --location --retry 3 \
+      https://releases.nixos.org/nix/nix-2.35.2/install -o "$installer"
+    printf '9adda97297d9e8ab360df95c729eabff4f4f93d6db091953c3a68f29e3fb130c  %s\n' "$installer" | sha256sum --check
+    sh "$installer" --no-daemon --yes --no-modify-profile --no-channel-add
+    rm -f "$installer"
+  fi
+  # The installer cannot modify the environment of this running script.
+  # shellcheck disable=SC1091
+  source "$HOME/.nix-profile/etc/profile.d/nix.sh"
+  mkdir -p "$HOME/.config/nix"
+  cat > "$HOME/.config/nix/network-audit.conf" <<'EOF'
+experimental-features = nix-command flakes
+build-users-group =
+sandbox = false
+EOF
+  touch "$HOME/.config/nix/nix.conf"
+  if ! grep -Fqx 'include network-audit.conf' "$HOME/.config/nix/nix.conf"; then
+    printf '\ninclude network-audit.conf\n' >> "$HOME/.config/nix/nix.conf"
+  fi
+}
+
+install_devenv() {
+  local revision
+  revision="$(jq -er '.nodes[.nodes[.root].inputs.nixpkgs].locked.rev' devenv.lock)"
+  mkdir -p "$HOME/.local/share/network-audit"
+  nix build "github:NixOS/nixpkgs/$revision#devenv" \
+    --out-link "$HOME/.local/share/network-audit/devenv"
+  export PATH="$HOME/.local/share/network-audit/devenv/bin:$PATH"
+}
+
+prepare_dependencies() {
+  devenv --quiet shell bash -euc '
+    flutter --version
+    if [[ -f pubspec.yaml ]]; then
+      if [[ ! -f pubspec.lock ]]; then
+        echo "Commit pubspec.lock before installing application dependencies in setup." >&2
+        exit 1
+      fi
+      flutter pub get --enforce-lockfile
+    fi
+  '
+}
+
+install_login_hook() {
+  local marker='# network-audit orb devenv activation'
+  touch "$HOME/.bash_profile"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile"; then
+    printf '\n%s\nsource %q\n' "$marker" "$root/.agents/activate.sh" >> "$HOME/.bash_profile"
+  fi
+}
+
+step 'System prerequisites' install_prerequisites
+step 'Nix (single-user, no daemon)' install_nix
+step 'devenv from the locked nixpkgs revision' install_devenv
+step 'Flutter, Android SDK/NDK and application dependencies' prepare_dependencies
+step 'Repository-scoped login environment' install_login_hook
+printf '\nOrb toolchain prepared. Android emulators require a separate KVM-capable host.\n'

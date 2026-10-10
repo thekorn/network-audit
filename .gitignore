@@ -1,0 +1,15 @@
+# Local development state; keep devenv.lock tracked.
+.devenv/
+.direnv/
+devenv.local.nix
+devenv.local.yaml
+.amp/portals/*
+
+# Flutter/Android generated files.
+.dart_tool/
+.flutter-plugins-dependencies
+.gradle/
+.android/
+build/
+local.properties
+*.iml

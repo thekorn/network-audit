@@ -88,6 +88,11 @@ with a private umask:
   expandable request/response headers, trailers, text or base64 bodies, status,
   timing, wire sizes and diagnostics. Untrusted content is escaped and rendered
   as text, never as HTML. Binary content is not executed or embedded.
+- `report.txt`: request counts per captured hostname, most frequent first, plus
+  a total. Subdomains stay separate. Each request counts once, including failed
+  and unfinished requests; TLS diagnostics are not requests. The same summary
+  prints to stdout at the end of each session, including interrupted or failed
+  sessions, and when regenerating reports. Empty captures show a total of zero.
 - `events.jsonl`: flushed request/response records, including failures and
   in-flight requests. A later record for the same ID replaces its earlier state.
 - `flows.mitm`: complete selected HTTP flows for analysis with `mitmweb -r` or
@@ -111,7 +116,7 @@ Ctrl+C, SIGTERM or a handled failure. Existing AVDs and host trust stores are no
 changed. Like other processes, it cannot clean up after SIGKILL or host power
 loss; a new run never adopts or kills an older run's emulator.
 
-Regenerate an HTML report after an interrupted run without an emulator:
+Regenerate HTML and text reports after an interrupted run without an emulator:
 
 ```sh
 network-audit report .network-audit/runs/<session>

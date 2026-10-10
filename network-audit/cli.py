@@ -266,7 +266,12 @@ def audit(args):
         metadata["ended"] = datetime.now(UTC).isoformat()
         save()
         report = generate_report(session)
-        print(f"\nReport: {report}\nRaw flows: {session / 'flows.mitm'}", flush=True)
+        summary = session / "report.txt"
+        print(
+            f"\nReport: {report}\nText report: {summary}\nRaw flows: {session / 'flows.mitm'}\n",
+            flush=True,
+        )
+        print(summary.read_text(), end="", flush=True)
     if failure:
         raise RuntimeError(failure)
     return 0
@@ -283,11 +288,15 @@ def main():
     try:
         if len(sys.argv) > 1 and sys.argv[1] == "report":
             regenerate = argparse.ArgumentParser(
-                description="Regenerate HTML from an existing audit session"
+                description="Regenerate HTML and text reports from an existing audit session"
             )
             regenerate.add_argument("session", type=Path)
             args = regenerate.parse_args(sys.argv[2:])
-            print(generate_report(args.session.resolve()))
+            session = args.session.resolve()
+            print(generate_report(session))
+            summary = session / "report.txt"
+            print(f"Text report: {summary}\n")
+            print(summary.read_text(), end="", flush=True)
             return 0
         return audit(parser().parse_args())
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:

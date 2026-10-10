@@ -1,4 +1,4 @@
-"""Offline, self-contained report. Captured content is data, never HTML."""
+"""Offline HTML report and text summary. Captured content is data, never HTML."""
 
 import json
 from collections import Counter
@@ -59,4 +59,10 @@ def generate_report(session):
     )
     path = session / "report.html"
     path.write_text(output)
+    summary = ["Requests per domain:"]
+    summary.extend(f"{host}: {count}" for host, count in counts.most_common())
+    if not counts:
+        summary.append("No matching HTTP requests captured.")
+    summary.append(f"Total requests: {len(flows)}")
+    (session / "report.txt").write_text("\n".join(summary) + "\n")
     return path

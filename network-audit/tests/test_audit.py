@@ -130,6 +130,11 @@ class AuditSessionTest(unittest.TestCase):
                 report = (session / "report.html").read_text()
                 self.assertIn("No matching HTTP exchanges", report)
                 self.assertIn(str(session / "report.html"), output.getvalue())
+                summary = (session / "report.txt").read_text()
+                self.assertIn("No matching HTTP requests captured.", summary)
+                self.assertIn("Total requests: 0", summary)
+                self.assertIn(str(session / "report.txt"), output.getvalue())
+                self.assertTrue(output.getvalue().endswith(summary))
                 if outcome == "launch failure":
                     self.assertEqual(metadata["failure"], "launch timed out\ufffd")
                     self.assertIn("launch timed out", report)
@@ -397,6 +402,70 @@ class DomainsTest(unittest.TestCase):
 
 
 class ReportTest(unittest.TestCase):
+    def test_report_command_summarizes_unique_requests_per_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "session.json").write_text(
+                json.dumps(
+                    {
+                        "app": "Summary contract",
+                        "domains": ["assets.test", "api.test", "*.api.test"],
+                        "started": "2026-10-10T10:00:00Z",
+                        "state": "interrupted",
+                    }
+                )
+            )
+            first = {
+                "id": "first",
+                "host": "assets.test",
+                "started": 10,
+                "response": None,
+                "error": None,
+            }
+            events = [
+                first,
+                {**first, "response": {"status": 200}},
+                {
+                    **first,
+                    "id": "http-error",
+                    "host": "api.test",
+                    "started": 20,
+                    "response": {"status": 503},
+                },
+                {
+                    **first,
+                    "id": "transport-error",
+                    "host": "api.test",
+                    "started": 30,
+                    "error": "connection reset",
+                },
+                {**first, "id": "pending", "host": "api.test", "started": 40},
+                {**first, "id": "subdomain", "host": "sub.api.test", "started": 50},
+                {"diagnostic": "TLS client failure for api.test"},
+            ]
+            (path / "events.jsonl").write_text(
+                "\n".join(json.dumps(event) for event in events) + '\n{"id":'
+            )
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "cli.py"), "report", str(path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            summary = (path / "report.txt").read_text()
+            self.assertEqual(
+                summary,
+                "Requests per domain:\n"
+                "api.test: 3\n"
+                "assets.test: 1\n"
+                "sub.api.test: 1\n"
+                "Total requests: 5\n",
+            )
+            self.assertIn(str(path / "report.html"), result.stdout)
+            self.assertIn(str(path / "report.txt"), result.stdout)
+            self.assertTrue(result.stdout.endswith(summary))
+            self.assertIn("Summary contract", (path / "report.html").read_text())
+
     def test_event_recovery_keeps_latest_state_and_sorts_by_start_time(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"

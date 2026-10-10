@@ -102,12 +102,23 @@ class Emulator:
                 return False
 
         wait_for(booted, "emulator boot", timeout=240)
-        self.adb("root")
-        self.adb("wait-for-device")
-        if self.shell("id -u") != "0":
-            raise RuntimeError(
-                "The audit needs a rootable google_apis image, not Google Play"
-            )
+
+        def rooted():
+            # adbd can close its transport while restarting as root. Check the
+            # resulting identity before retrying instead of trusting the ACK.
+            try:
+                if self.adb("shell", "id -u", timeout=5) == "0":
+                    return True
+                result = self.adb("root", timeout=10)
+                if "cannot run as root" in result:
+                    raise RuntimeError(
+                        "The audit needs a rootable google_apis image, not Google Play"
+                    )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                return False
+            return False
+
+        wait_for(rooted, "root ADB connection", timeout=45)
         # QUIC bypasses the emulator's TCP proxy. Force HTTPS clients to use TCP.
         self.shell("iptables -I OUTPUT -p udp --dport 443 -j REJECT")
         self.shell("ip6tables -I OUTPUT -p udp --dport 443 -j REJECT")

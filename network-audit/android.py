@@ -117,6 +117,11 @@ class Emulator:
         self.port = emulator_port()
         self.serial = f"emulator-{self.port}"
 
+    @property
+    def device_id(self):
+        # mobilecli uses AVD names for emulator transports, but the serial for TCP.
+        return self.name if self.serial.startswith("emulator-") else self.serial
+
     def adb(self, *args, timeout=60):
         return run(["adb", "-s", self.serial, *args], timeout=timeout)
 
@@ -198,6 +203,33 @@ class Emulator:
             return False
 
         wait_for(rooted, "root ADB connection", timeout=45)
+        if sys.platform == "darwin":
+            # The pinned ARM64 emulator's vsock ADB transport can drop large
+            # transfers (including UI dumps) without restarting adbd. Route
+            # through its loopback-only console redirection instead. The API 36
+            # image already listens on guest TCP 5555; no adb tcpip restart needed.
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+            result = self.adb("emu", "redir", "add", f"tcp:{port}:5555")
+            # `adb emu` may exit successfully even when the console reports KO.
+            if result != "OK":
+                raise RuntimeError(f"Could not forward emulator ADB: {result}")
+            self.serial = f"127.0.0.1:{port}"
+
+            def connected():
+                try:
+                    run(["adb", "connect", self.serial], timeout=10)
+                    if self.adb("shell", "id -u", timeout=5) != "0":
+                        return False
+                    name = self.adb("shell", "getprop ro.boot.qemu.avd_name", timeout=5)
+                    if name != self.name:
+                        raise RuntimeError("Loopback ADB did not reach the owned emulator")
+                    return True
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    return False
+
+            wait_for(connected, "loopback ADB connection", timeout=45)
         # QUIC bypasses the emulator's TCP proxy. Force HTTPS clients to use TCP.
         self.shell("iptables -I OUTPUT -p udp --dport 443 -j REJECT")
         self.shell("ip6tables -I OUTPUT -p udp --dport 443 -j REJECT")
@@ -261,17 +293,23 @@ test -r "$system/{digest}.0"
         )
 
     def close(self):
-        if self.process is not None and self.process.poll() is None:
-            try:
-                self.adb("emu", "kill", timeout=10)
-                self.process.wait(timeout=20)
-            except (subprocess.SubprocessError, OSError):
-                self.process.terminate()
+        try:
+            if self.process is not None and self.process.poll() is None:
                 try:
-                    self.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait()
+                    # `emu` addresses the console, not the loopback TCP device.
+                    run(["adb", "-s", f"emulator-{self.port}", "emu", "kill"], timeout=10)
+                    self.process.wait(timeout=20)
+                except (subprocess.SubprocessError, OSError):
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait()
+        finally:
+            if self.serial.startswith("127.0.0.1:"):
+                # Only remove our connection, never restart the shared ADB server.
+                run(["adb", "disconnect", self.serial], timeout=10)
 
 
 def apk_identity(apk):

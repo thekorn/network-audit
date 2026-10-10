@@ -41,6 +41,14 @@ that Hypervisor.Framework is usable. The CLI checks acceleration and the image
 before starting the build. The image is selected by the flake or devenv via
 `NETWORK_AUDIT_SYSTEM_IMAGE`; do not override it or install SDK components by hand.
 
+On macOS, the CLI routes ADB through an emulator-owned loopback TCP forward
+after boot and verifies the AVD identity before installing anything. This avoids
+the pinned ARM64 emulator's vsock transport dropping large transfers, which can
+surface as `uiautomator dump: exit status 255`, `device offline`, or even a
+successful but truncated `adb exec-out`. The printed serial is therefore
+`127.0.0.1:<port>` on macOS; Linux keeps `emulator-<port>`. The forward and ADB
+connection are removed during cleanup without restarting the shared ADB server.
+
 Put defaults in the app directory (or beside an APK) as `network-audit.toml`:
 
 ```toml

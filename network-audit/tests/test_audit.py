@@ -293,6 +293,86 @@ def create_avd(args, **kwargs):
 
 
 class EmulatorPreflightTest(unittest.TestCase):
+    def test_transport_identity_and_cleanup_on_each_host(self):
+        for host in ("darwin", "linux"):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory:
+                emulator = Emulator(directory, None, 8080, True, "test-image")
+                console = emulator.serial
+                connections = {"unrelated-device"}
+                running = [True]
+                process = Mock()
+                process.poll.side_effect = lambda: None if running[0] else 0
+
+                def command(args, **kwargs):
+                    if args[0] == "avdmanager":
+                        return create_avd(args, **kwargs)
+                    if args[1] == "connect":
+                        connections.add(args[2])
+                        return "connected"
+                    if args[1] == "disconnect":
+                        connections.remove(args[2])
+                        return "disconnected"
+                    serial, *action = args[2:]
+                    if action == ["emu", "kill"] and serial == console:
+                        running[0] = False
+                    if action == ["shell", "getprop sys.boot_completed"]:
+                        return "1"
+                    if action == ["shell", "id -u"]:
+                        return "0"
+                    if action == ["shell", "getprop ro.boot.qemu.avd_name"]:
+                        return Path(directory).name
+                    if action == ["shell", "echo transport"]:
+                        return serial
+                    return "OK"
+
+                with (
+                    patch("android.sys.platform", host),
+                    patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
+                    patch("android.run", side_effect=command),
+                    patch("android.subprocess.Popen", return_value=process),
+                ):
+                    emulator.start()
+                    if host == "darwin":
+                        self.assertRegex(emulator.serial, r"^127\.0\.0\.1:\d+$")
+                        self.assertEqual(emulator.device_id, emulator.serial)
+                        self.assertIn(emulator.serial, connections)
+                    else:
+                        self.assertEqual(emulator.serial, console)
+                        self.assertEqual(emulator.device_id, Path(directory).name)
+                    self.assertEqual(emulator.shell("echo transport"), emulator.serial)
+                    emulator.close()
+                self.assertFalse(running[0], "Shutdown must address the emulator console")
+                self.assertEqual(connections, {"unrelated-device"})
+
+    def test_transport_setup_rejects_busy_ports_and_wrong_devices(self):
+        for replies, message in (
+            (["KO: port is busy"], "Could not forward emulator ADB"),
+            (["OK", "connected", "0", "unrelated-avd"], "did not reach the owned emulator"),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                emulator = Emulator(directory, None, 8080, True, "test-image")
+                console = emulator.serial
+                process = Mock()
+                process.poll.return_value = None
+                responses = iter(["1", "0", *replies])
+
+                def command(args, **kwargs):
+                    if args[0] == "avdmanager":
+                        return create_avd(args, **kwargs)
+                    return next(responses)
+
+                with (
+                    patch("android.sys.platform", "darwin"),
+                    patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
+                    patch("android.subprocess.Popen", return_value=process),
+                    patch("android.run", side_effect=command),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    emulator.start()
+                if replies[0].startswith("KO"):
+                    self.assertEqual(emulator.serial, console)
+                    self.assertEqual(emulator.device_id, Path(directory).name)
+
     def test_start_limits_storage_for_the_unique_avd(self):
         with tempfile.TemporaryDirectory(prefix="network-audit-") as directory:
             device = Emulator(directory, None, 8080, True, "test-image")

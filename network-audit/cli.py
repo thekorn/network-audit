@@ -34,6 +34,13 @@ def parser():
         help="Use 'fvm flutter' for Flutter project builds (ignored for APKs)",
     )
     result.add_argument(
+        "--dart-define-from-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="JSON or .env file for Flutter compile-time values; repeatable or comma-separated; paths relative to the current directory; not for APKs",
+    )
+    result.add_argument(
         "--domain",
         action="append",
         help="Exact hostname or '*.example.com'; repeatable; overrides scenario domains",
@@ -95,6 +102,16 @@ def audit(args):
     app = args.app.resolve()
     if not app.exists():
         raise ValueError(f"App not found: {app}")
+    if args.dart_define_from_file and not app.is_dir():
+        raise ValueError("--dart-define-from-file requires a Flutter project, not an APK")
+    define_files = [
+        Path(path).resolve()
+        for value in args.dart_define_from_file
+        for path in value.split(",")
+    ]
+    for path in define_files:
+        if not path.is_file():
+            raise ValueError(f"Dart define file not found or not a file: {path}")
     if (
         not math.isfinite(args.close_grace)
         or args.close_grace <= 0
@@ -137,7 +154,16 @@ def audit(args):
             [*flutter, "pub", "get", "--enforce-lockfile"], cwd=app, check=True
         )
         subprocess.run(
-            [*flutter, "build", "apk", "--debug", "--no-pub"], cwd=app, check=True
+            [
+                *flutter,
+                "build",
+                "apk",
+                "--debug",
+                "--no-pub",
+                *(f"--dart-define-from-file={path}" for path in define_files),
+            ],
+            cwd=app,
+            check=True,
         )
         apk = app / "build/app/outputs/flutter-apk/app-debug.apk"
     else:

@@ -51,6 +51,50 @@ and 36.0.0. FVM does not add other Android SDK components: if a project requires
 another version, it must be declared in the Nix toolchain, not installed into
 the read-only `/nix/store` by Gradle or `sdkmanager`.
 
+### Flutter environment values
+
+Pass Flutter's `--dart-define-from-file` option to bake configuration into the
+debug APK before it runs in the emulator:
+
+```sh
+network-audit /path/to/flutter-project --domain api.example.com \
+  --dart-define-from-file /path/to/config/dev.json
+# The devenv shortcut forwards the same option:
+devenv shell audit /path/to/flutter-project --domain api.example.com \
+  --dart-define-from-file /path/to/config/dev.json
+```
+
+For example, `dev.json` can contain:
+
+```json
+{
+  "API_URL": "https://api.example.com",
+  "ENABLE_DEBUG_MENU": true
+}
+```
+
+Read these as compile-time values in Dart, not process environment variables:
+
+```dart
+const apiUrl = String.fromEnvironment('API_URL');
+const enableDebugMenu = bool.fromEnvironment('ENABLE_DEBUG_MENU');
+```
+
+JSON and `.env` files are parsed by Flutter. Relative paths resolve from the
+directory where you invoke `network-audit`, **not** from the Flutter project
+directory. Repeat the option to layer files (later files override earlier keys),
+or use Flutter's comma-separated path syntax. Paths containing spaces work when
+quoted; commas separate paths and cannot be part of a filename. The option also
+works with `--use-fvm` and `--scenario`. Missing files or directory paths fail
+before the build; malformed file contents fail in Flutter before an emulator
+session starts. Prebuilt APKs reject the option because their compiled values
+cannot be changed.
+
+Keep private configuration files out of version control. These values are
+embedded in the APK, so do not treat Dart defines as secret storage.
+
+### Android runtime
+
 macOS uses its built-in Hypervisor.Framework, not `/dev/kvm`. Run Nix/devenv
 natively on Apple Silicon, not under Rosetta; Intel Macs are not supported by
 the pinned Nix Flutter/Android packages. Android Studio is not required for this

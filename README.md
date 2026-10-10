@@ -87,6 +87,14 @@ Quote paths containing spaces, for example
 `devenv shell audit '../my app' --domain api.example.com`.
 Add `--headless` to hide the emulator window.
 
+For Flutter compile-time configuration, add
+`--dart-define-from-file /path/to/config/dev.json` (or a `.env` file).
+Repeat the option to layer files; later values win. Relative paths are based on
+the directory where you run the command, not the app directory. This also works
+with `--use-fvm`, but not with prebuilt APKs. See
+[Flutter environment values](network-audit/README.md#flutter-environment-values)
+for file and Dart examples.
+
 Press **Ctrl+C once** in the terminal to finish the capture, then wait for the
 printed report path. Output streams directly, with no task TUI or confirmation
 prompt. This replaces `devenv tasks run network-audit --input app=sample-app`:

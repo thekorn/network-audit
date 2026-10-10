@@ -14,9 +14,10 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import chdir, contextmanager, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
+from itertools import product
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -160,18 +161,47 @@ class AuditSessionTest(unittest.TestCase):
                     self.assertEqual(elapsed[0], 5)
 
     def test_flutter_build_uses_selected_executable_in_project_directory(self):
-        for options, tool, prefix in (
-            ([], "flutter", []),
-            (["--use-fvm"], "fvm", ["flutter"]),
+        for (options, tool, prefix), define_mode in product(
+            (([], "flutter", []), (["--use-fvm"], "fvm", ["flutter"])),
+            ("none", "single", "repeated", "comma-separated"),
         ):
             with (
-                self.subTest(tool=tool),
+                self.subTest(tool=tool, define_mode=define_mode),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory).resolve()
                 app = root / "project with spaces"
                 app.mkdir()
                 (app / "pubspec.lock").touch()
+                base = root / "base config.json"
+                base.write_text('{"API_URL": "https://base.test"}')
+                override = root / "override.env"
+                override.write_text("API_URL=https://override.test\n")
+                define_options, define_arguments = {
+                    "none": ([], []),
+                    "single": (
+                        ["--dart-define-from-file", base.name],
+                        [f"--dart-define-from-file={base}"],
+                    ),
+                    "repeated": (
+                        [
+                            f"--dart-define-from-file={base.name}",
+                            "--dart-define-from-file",
+                            str(override),
+                        ],
+                        [
+                            f"--dart-define-from-file={base}",
+                            f"--dart-define-from-file={override}",
+                        ],
+                    ),
+                    "comma-separated": (
+                        [f"--dart-define-from-file={base.name},{override}"],
+                        [
+                            f"--dart-define-from-file={base}",
+                            f"--dart-define-from-file={override}",
+                        ],
+                    ),
+                }[define_mode]
                 bin_dir = root / "bin"
                 bin_dir.mkdir()
                 executable = bin_dir / tool
@@ -196,9 +226,11 @@ class AuditSessionTest(unittest.TestCase):
                         "--output",
                         str(root / "runs"),
                         *options,
+                        *define_options,
                     ]
                 )
                 with (
+                    chdir(root),
                     patch.dict(os.environ, {"PATH": str(bin_dir)}),
                     patch("cli.check_emulator", return_value="test-image"),
                     self.assertRaises(subprocess.CalledProcessError) as failure,
@@ -212,7 +244,17 @@ class AuditSessionTest(unittest.TestCase):
                     ],
                     [
                         [[*prefix, "pub", "get", "--enforce-lockfile"], str(app)],
-                        [[*prefix, "build", "apk", "--debug", "--no-pub"], str(app)],
+                        [
+                            [
+                                *prefix,
+                                "build",
+                                "apk",
+                                "--debug",
+                                "--no-pub",
+                                *define_arguments,
+                            ],
+                            str(app),
+                        ],
                     ],
                 )
                 self.assertFalse((root / "runs").exists())
@@ -250,12 +292,31 @@ class AuditSessionTest(unittest.TestCase):
             root = Path(directory)
             apk = root / "app.apk"
             apk.touch()
+            defines = root / "config.json"
+            defines.write_text('{"API_URL": "https://example.test"}')
             (root / "network-audit.toml").write_text('domains = ["legacy.test"]')
             cases = [
                 ([str(root / "missing.apk")], "App not found"),
                 ([str(apk)], "No domains configured"),
                 ([str(apk), "--domain", "https://example.com"], "Invalid domain"),
+                (
+                    [str(apk), "--dart-define-from-file", str(defines)],
+                    "requires a Flutter project, not an APK",
+                ),
             ]
+            for path in (root / "missing.json", root, ""):
+                cases.append(
+                    (
+                        [
+                            str(root),
+                            "--dart-define-from-file",
+                            str(defines),
+                            "--dart-define-from-file",
+                            str(path),
+                        ],
+                        "Dart define file not found or not a file",
+                    )
+                )
             for option, values in (
                 ("--close-grace", ["0", "-1", "nan", "inf"]),
                 ("--body-limit", ["0", "-1"]),

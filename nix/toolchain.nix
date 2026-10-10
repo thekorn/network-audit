@@ -20,6 +20,7 @@ let
     buildToolsVersions = [
       "35.0.0"
       buildToolsVersion
+      "37.0.0"
     ];
     includeNDK = true;
     ndkVersions = [ ndkVersion ];
@@ -38,6 +39,7 @@ let
       platformVersions = [
         "34"
         "35"
+        "37"
       ];
     }).platforms;
   androidSdk = android.androidsdk.override (old: {

@@ -48,7 +48,7 @@ def generate_report(session):
         undefined=StrictUndefined,
         keep_trailing_newline=True,
     )
-    output = environment.get_template("report.html").render(
+    output = environment.get_template("report.html.jinja").render(
         metadata=metadata,
         flows=flows,
         diagnostics=diagnostics,

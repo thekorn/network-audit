@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Network audit scenario",
+  "type": "object",
+  "required": ["executor"],
+  "additionalProperties": false,
+  "properties": {
+    "executor": {
+      "description": "Trusted .js or .mjs executor; relative paths resolve beside the scenario TOML.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "domains": {
+      "description": "Exact hostnames or *.hostname filters. Omit to capture all HTTP(S) requests.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

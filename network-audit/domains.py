@@ -25,6 +25,9 @@ def normalize_domains(values):
 
 
 def host_pattern(domains):
+    # An omitted scenario filter captures every host; an empty list is invalid.
+    if domains is None:
+        return ".*"
     # *.example.com intentionally excludes the apex example.com.
     return (
         "(?:"

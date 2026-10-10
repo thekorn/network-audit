@@ -11,7 +11,10 @@
 }:
 
 let
-  python = python3.withPackages (ps: [ ps.jinja2 ]);
+  python = python3.withPackages (ps: [
+    ps.jinja2
+    ps.jsonschema
+  ]);
   mobilewright = pkgs.callPackage ./mobilewright.nix { inherit nodejs_24; };
   toolchain = import ./toolchain.nix {
     inherit pkgs;
@@ -57,7 +60,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/libexec/network-audit" "$out/bin"
-    cp *.py report.html.jinja "$out/libexec/network-audit/"
+    cp *.py scenario.schema.json report.html.jinja "$out/libexec/network-audit/"
     makeWrapper ${python}/bin/python3 "$out/bin/network-audit" \
       --add-flags "$out/libexec/network-audit/cli.py" \
       --prefix PATH : ${lib.makeBinPath runtimePackages} \
@@ -84,7 +87,7 @@ stdenvNoCC.mkDerivation {
     touch app.apk
     mkdir scenarios
     printf 'export default async function ( {\n' > scenarios/invalid.mjs
-    printf 'domains = ["example.test"]\nexecutor = "invalid.mjs"\n' > scenarios/invalid.toml
+    printf 'executor = "invalid.mjs"\n' > scenarios/invalid.toml
     if env -i HOME="$HOME" "$out/bin/network-audit" "$TMPDIR/app.apk" \
       --scenario "$TMPDIR/scenarios/invalid.toml" > scenario.log 2>&1; then
       echo "Expected invalid executor syntax to fail" >&2
@@ -92,6 +95,13 @@ stdenvNoCC.mkDerivation {
     fi
     grep -F 'Invalid executor syntax:' scenario.log
     grep -F 'SyntaxError' scenario.log
+    printf 'domains = ["example.test"]\n' > scenarios/invalid.toml
+    if env -i HOME="$HOME" "$out/bin/network-audit" "$TMPDIR/app.apk" \
+      --scenario "$TMPDIR/scenarios/invalid.toml" > scenario.log 2>&1; then
+      echo "Expected missing executor to fail schema validation" >&2
+      exit 1
+    fi
+    grep -F "'executor' is a required property" scenario.log
     runHook postInstallCheck
   '';
 

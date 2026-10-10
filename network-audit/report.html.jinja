@@ -431,11 +431,19 @@
         </section>
         <section class="panel" id="scope">
           <h2>Capture scope</h2>
+          {% if metadata.domains is none %}
+          <p class="mono">All HTTP(S) requests</p>
+          <p class="muted">
+            HTTP(S) traffic from every domain reaching the proxy on the dedicated
+            emulator, including native clients and WebView. No domain filter.
+          </p>
+          {% else %}
           <p class="mono">{{ metadata.domains|join(' · ') }}</p>
           <p class="muted">
             Selected-domain HTTP(S) traffic from a dedicated emulator, including
             native clients and WebView. Other domains are not recorded.
           </p>
+          {% endif %}
           <p class="notice">
             Not per-process attribution. No certificate-pinning bypass or
             WebSocket frame capture. QUIC is blocked to encourage TCP fallback.

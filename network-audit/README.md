@@ -57,9 +57,21 @@ domains = ["*.bunte.de", "dummyjson.com"]
 executor = "browse.mjs"
 ```
 
-Select it with `--scenario sample-app/scenarios/browse.toml`. Both fields are
-required: `domains` is a non-empty list of hostnames, and `executor` is the path
-to a trusted JavaScript file (`.js` or `.mjs`). The TOML path is relative to your
+Select it with `--scenario sample-app/scenarios/browse.toml`. Before checking the
+runtime, building the app or creating a session, the CLI validates the parsed
+TOML against the bundled [JSON Schema](scenario.schema.json). `executor` is
+required and must name a trusted JavaScript file (`.js` or `.mjs`). `domains` is
+optional; when present, it must be a non-empty list of hostnames. Unknown fields
+are rejected so a typo cannot silently turn off filtering.
+
+To capture all HTTP(S) requests reaching the proxy, omit `domains` entirely:
+
+```toml
+executor = "browse.mjs"
+```
+
+This includes traffic from the whole dedicated emulator, not only the audited
+app. Explicit `domains = []` is invalid. The TOML path is relative to your
 current working directory; a relative executor path resolves beside the TOML
 file, not beside the app or relative to the working directory. Absolute executor
 paths also work. Different scenarios can share an executor but log different domains.
@@ -69,8 +81,9 @@ an APK, and `--scenario` no longer accepts a JavaScript file directly. To migrat
 move the old `domains` list into each scenario's TOML and add its `executor` path.
 For manual captures without a scenario, specify domains with `--domain`.
 
-`--domain` may be repeated and **replaces** the scenario's domain list; the TOML
-must still contain valid `domains` and `executor` fields. Exact names match
+`--domain` may be repeated and **replaces** the scenario's domain filter, including
+when `domains` is omitted. The TOML must still pass validation even when a CLI
+override is supplied. Exact names match
 only that host; `*.bunte.de` matches `www.bunte.de` and deeper subdomains, not
 `bunte.de` itself. Include the apex separately when needed. Domain names are
 case-insensitive; use punycode for internationalized names. URL paths, schemes,
@@ -247,7 +260,8 @@ with a private umask:
   `proxy.log` contains its stderr.
 - `scenario.log` (automated runs): scenario progress, assertion failures and
   Mobilewright errors. The resolved TOML `scenario` path, JavaScript `executor`
-  path and timeout are in `session.json`.
+  path and timeout are in `session.json`. Its `domains` value is `null` for
+  unfiltered captures, otherwise the effective hostname list after CLI overrides.
 
 Text bodies are decoded (including compression). The terminal and HTML preview
 limit defaults to 1 MiB of wire bytes / 1 Mi characters of decoded text per

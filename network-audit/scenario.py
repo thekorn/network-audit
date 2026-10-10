@@ -1,5 +1,6 @@
 """Load a scenario definition and run its trusted Mobilewright executor."""
 
+import json
 import os
 import shutil
 import signal
@@ -8,6 +9,8 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
+
+from jsonschema import ValidationError, validate
 
 from android import wait_for
 from domains import normalize_domains
@@ -28,11 +31,16 @@ def load_scenario(path):
         config = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as error:
         raise ValueError(f"Invalid scenario TOML: {path}: {error}") from error
-    domains = normalize_domains(config.get("domains", []))
-    executor = config.get("executor")
-    if not isinstance(executor, str) or not executor.strip():
-        raise ValueError(f"Scenario executor must be a non-empty JavaScript path: {path}")
-    return domains, validate_executor(path.parent / executor)
+    schema = json.loads(Path(__file__).with_name("scenario.schema.json").read_text())
+    try:
+        validate(config, schema)
+    except ValidationError as error:
+        field = ".".join(map(str, error.absolute_path)) or "<root>"
+        raise ValueError(
+            f"Invalid scenario schema: {path}: {field}: {error.message}"
+        ) from error
+    domains = normalize_domains(config["domains"]) if "domains" in config else None
+    return domains, validate_executor(path.parent / config["executor"])
 
 
 def validate_executor(path):

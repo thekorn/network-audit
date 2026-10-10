@@ -49,7 +49,7 @@ def parser():
     result.add_argument(
         "--scenario",
         type=Path,
-        help="Scenario .toml file with domains and a trusted JavaScript executor",
+        help="Scenario .toml with a trusted JavaScript executor; omitted domains capture all HTTP(S)",
     )
     result.add_argument(
         "--scenario-timeout",
@@ -158,7 +158,8 @@ def audit(args):
         (session / "session.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
     save()
-    print(f"Session: {session}\nCapturing: {', '.join(domains)}", flush=True)
+    scope = ", ".join(domains) if domains is not None else "all HTTP(S) requests"
+    print(f"Session: {session}\nCapturing: {scope}", flush=True)
     print(
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,

@@ -13,7 +13,10 @@ let
   };
   inherit (toolchain) buildToolsVersion emulatorAbi;
   androidHome = toolchain.env.ANDROID_HOME;
-  python = pkgs.python3.withPackages (ps: [ ps.jinja2 ]);
+  python = pkgs.python3.withPackages (ps: [
+    ps.jinja2
+    ps.jsonschema
+  ]);
   mobilewright = pkgs.callPackage ./nix/mobilewright.nix { };
 in
 {

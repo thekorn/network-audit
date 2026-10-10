@@ -193,21 +193,49 @@ class AuditSessionTest(unittest.TestCase):
                 (config, None, "existing .toml"),
                 (module, None, "existing .toml"),
                 (config, "[broken", "Invalid scenario TOML"),
-                (config, 'executor = "executor.mjs"', "No domains configured"),
-                (config, 'domains = []', "No domains configured"),
-                (config, 'domains = "config.test"', "list of hostnames"),
-                (config, 'domains = [123]', "list of hostnames"),
-                (config, 'domains = ["https://config.test"]', "Invalid domain"),
-                (config, 'domains = ["config.test"]', "non-empty JavaScript path"),
+                (config, "", "'executor' is a required property"),
                 (
                     config,
-                    'domains = ["config.test"]\nexecutor = "  "',
-                    "non-empty JavaScript path",
+                    'domains = ["config.test"]',
+                    "'executor' is a required property",
+                ),
+                (config, 'executor = ""', "executor: .*does not match"),
+                (config, 'executor = "  "', "executor: .*does not match"),
+                (
+                    config,
+                    'executor = ["executor.mjs"]',
+                    "executor: .*not of type 'string'",
+                ),
+                (config, "executor = 123", "executor: .*not of type 'string'"),
+                (
+                    config,
+                    'executor = "executor.mjs"\ndomains = []',
+                    "domains: .*should be non-empty",
                 ),
                 (
                     config,
-                    'domains = ["config.test"]\nexecutor = ["executor.mjs"]',
-                    "non-empty JavaScript path",
+                    'executor = "executor.mjs"\ndomains = "config.test"',
+                    "domains: .*not of type 'array'",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\ndomains = ["config.test", 123]',
+                    r"domains\.1: .*not of type 'string'",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\ndomains = [""]',
+                    r"domains\.0: .*should be non-empty",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\ndomains = ["https://config.test"]',
+                    "Invalid domain",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\ndomians = ["config.test"]',
+                    "Additional properties are not allowed.*domians",
                 ),
                 (
                     config,
@@ -224,8 +252,11 @@ class AuditSessionTest(unittest.TestCase):
                     if definition is not None:
                         config.write_text(definition)
                     args.scenario = filename
-                    with self.assertRaisesRegex(ValueError, message):
-                        audit(args)
+                    # A CLI override must not hide an invalid TOML definition.
+                    for override in (None, ["override.test"]):
+                        args.domain = override
+                        with self.assertRaisesRegex(ValueError, message):
+                            audit(args)
                     self.assertFalse((root / "runs").exists())
             config.write_text('domains = ["config.test"]\nexecutor = "executor.mjs"')
             with patch(
@@ -332,6 +363,91 @@ class EmulatorOptionsTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("mitmdump"), "mitmdump is supplied by devenv")
 class ScenarioAuditTest(unittest.TestCase):
+    def test_omitted_domains_capture_all_and_cli_override_filters(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            for override, expected_hosts in (
+                ([], ["localhost", "127.0.0.1"]),
+                (["--domain", "localhost"], ["localhost"]),
+            ):
+                with (
+                    self.subTest(override=override),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    apk = root / "sample.apk"
+                    apk.touch()
+                    config = root / "scenario.toml"
+                    config.write_text('executor = "executor.mjs"\n')
+                    (root / "executor.mjs").write_text(
+                        "export default async function () {}\n"
+                    )
+                    args = parser().parse_args(
+                        [
+                            str(apk),
+                            "--scenario",
+                            str(config),
+                            "--output",
+                            str(root / "runs"),
+                            *override,
+                        ]
+                    )
+
+                    def execute(*_args, **_kwargs):
+                        # Use the proxy port handed to the emulator boundary.
+                        port = emulator.call_args.args[2]
+                        for host in ("localhost", "127.0.0.1"):
+                            conn = http.client.HTTPConnection(
+                                "127.0.0.1", port, timeout=10
+                            )
+                            conn.request(
+                                "GET", f"http://{host}:{server.server_port}/ok"
+                            )
+                            response = conn.getresponse()
+                            self.assertEqual(response.status, 200)
+                            response.read()
+                            conn.close()
+
+                    with (
+                        patch("cli.shutil.which", return_value="available"),
+                        patch("cli.check_emulator", return_value="test-image"),
+                        patch("cli.apk_identity", return_value=("test.app", "Main")),
+                        patch("cli.Emulator") as emulator,
+                        patch("cli.run_scenario", side_effect=execute),
+                        redirect_stdout(StringIO()) as output,
+                    ):
+                        emulator.return_value.serial = "emulator-5580"
+                        emulator.return_value.foreground.return_value = True
+                        self.assertEqual(audit(args), 0)
+                    (session,) = (root / "runs").iterdir()
+                    metadata = json.loads((session / "session.json").read_text())
+                    self.assertEqual(
+                        metadata["domains"], ["localhost"] if override else None
+                    )
+                    flows, diagnostics = read_events(session / "events.jsonl")
+                    self.assertEqual([flow["host"] for flow in flows], expected_hosts)
+                    self.assertEqual(diagnostics, [])
+                    self.assertTrue(
+                        all(flow["response"]["status"] == 200 for flow in flows)
+                    )
+                    self.assertIn(
+                        f"Total requests: {len(expected_hosts)}",
+                        (session / "report.txt").read_text(),
+                    )
+                    report = (session / "report.html").read_text()
+                    if override:
+                        self.assertIn("Other domains are not recorded.", report)
+                    else:
+                        self.assertIn(
+                            "Capturing: all HTTP(S) requests", output.getvalue()
+                        )
+                        self.assertIn("All HTTP(S) requests", report)
+                        self.assertNotIn("Other domains are not recorded.", report)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_completion_failure_and_interrupt_always_emit_report(self):
         # Exercise real proxy/report IO; Android and scenario outcomes are the
         # boundaries here. Native acceptance covers the actual Mobilewright UI.

@@ -17,12 +17,91 @@ import unittest
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from android import check_emulator
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class EmulatorPreflightTest(unittest.TestCase):
+    def test_supported_hosts_use_the_declared_image(self):
+        for host, machine, abi, kvm in (
+            ("darwin", "arm64", "arm64-v8a", False),
+            ("darwin", "aarch64", "arm64-v8a", False),
+            ("linux", "x86_64", "x86_64", True),
+        ):
+            with (
+                self.subTest(host=host, machine=machine),
+                tempfile.TemporaryDirectory() as sdk,
+            ):
+                image = f"system-images;android-36;google_apis;{abi}"
+                package = Path(sdk).joinpath(*image.split(";")) / "package.xml"
+                package.parent.mkdir(parents=True)
+                package.touch()
+                with (
+                    patch("android.sys.platform", host),
+                    patch("android.platform.machine", return_value=machine),
+                    patch("android.os.access", return_value=kvm),
+                    patch.dict(
+                        os.environ,
+                        {"ANDROID_HOME": sdk, "NETWORK_AUDIT_SYSTEM_IMAGE": image},
+                    ),
+                    patch(
+                        "android.subprocess.run",
+                        return_value=subprocess.CompletedProcess(
+                            ["emulator", "-accel-check"],
+                            0,
+                            stdout="accel:\n0\nusable\naccel",
+                        ),
+                    ),
+                ):
+                    self.assertEqual(check_emulator(), image)
+                    with (
+                        patch(
+                            "android.subprocess.run",
+                            side_effect=subprocess.CalledProcessError(
+                                1,
+                                ["emulator", "-accel-check"],
+                                output="accel:\n1\ndisabled",
+                                stderr="hypervisor unavailable",
+                            ),
+                        ),
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "(?s)unavailable.*disabled.*hypervisor unavailable",
+                        ),
+                    ):
+                        check_emulator()
+                    package.unlink()
+                    with self.assertRaisesRegex(
+                        RuntimeError, "Missing system-images.*androidEmulator.enable"
+                    ):
+                        check_emulator()
+                    with (
+                        patch.dict(os.environ, {}, clear=True),
+                        self.assertRaisesRegex(RuntimeError, "Enter devenv"),
+                    ):
+                        check_emulator()
+
+    def test_unsupported_hosts_and_linux_without_kvm_are_rejected(self):
+        for host, machine, message in (
+            ("darwin", "x86_64", "Intel Macs"),
+            ("linux", "aarch64", "Unsupported host"),
+            ("win32", "AMD64", "Unsupported host"),
+            ("linux", "x86_64", "/dev/kvm"),
+        ):
+            with (
+                self.subTest(host=host, machine=machine),
+                patch("android.sys.platform", host),
+                patch("android.platform.machine", return_value=machine),
+                patch("android.os.access", return_value=False),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                check_emulator()
 
 
 class DomainsTest(unittest.TestCase):

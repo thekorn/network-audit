@@ -11,6 +11,7 @@ let
   python = pkgs.python3.withPackages (ps: [ ps.jinja2 ]);
   buildToolsVersion = "36.0.0";
   ndkVersion = "28.2.13676358";
+  emulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
   # Compose the SDK directly: devenv's Android module also adds an emulator
   # helper even when android.emulator.enable is false.
   androidEnv = pkgs.callPackage "${pkgs.path}/pkgs/development/mobile/androidenv" {
@@ -26,12 +27,12 @@ let
     includeEmulator = config.androidEmulator.enable;
     includeSystemImages = config.androidEmulator.enable;
     systemImageTypes = [ "google_apis" ];
-    abiVersions = [ "x86_64" ];
+    abiVersions = [ emulatorAbi ];
   };
   androidHome = "${android.androidsdk}/libexec/android-sdk";
 in
 {
-  options.androidEmulator.enable = lib.mkEnableOption "the Android emulator and API 36 x86_64 image (KVM-capable Linux hosts only, never orbs)";
+  options.androidEmulator.enable = lib.mkEnableOption "the Android emulator and host-native API 36 image (Apple Silicon Macs or KVM-capable x86_64 Linux hosts, never orbs)";
 
   config = {
     # v2.4.0's generated latest-version file still says 2.3.1. Use the pinned
@@ -65,6 +66,7 @@ in
       PUB_CACHE = "${config.devenv.state}/pub-cache";
       GRADLE_USER_HOME = "${config.devenv.state}/gradle";
       NETWORK_AUDIT_DEVENV = config.devenv.root;
+      NETWORK_AUDIT_SYSTEM_IMAGE = "system-images;android-36;google_apis;${emulatorAbi}";
       FLUTTER_SUPPRESS_ANALYTICS = "true";
     };
 
@@ -82,6 +84,10 @@ in
       test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
       test -f "$ANDROID_NDK_ROOT/source.properties"
       test -d "$ANDROID_HOME/cmake/3.22.1"
+      ${lib.optionalString config.androidEmulator.enable ''
+        test -x "$ANDROID_HOME/emulator/emulator"
+        test -f "$ANDROID_HOME/system-images/android-36/google_apis/${emulatorAbi}/package.xml"
+      ''}
     '';
   };
 }

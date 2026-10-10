@@ -7,8 +7,8 @@ sends ten GET requests per batch and an Android WebView loading BUNTE.
 
 ## Audit the sample
 
-On a **KVM-capable x86_64 Linux host**, enable the declared emulator in the ignored
-`devenv.local.nix` (not in an Amp orb):
+On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host**, enable the
+declared emulator in the ignored `devenv.local.nix` (not in an Amp orb):
 
 ```nix
 { androidEmulator.enable = true; }
@@ -20,6 +20,12 @@ Then run from the repository root:
 devenv shell
 network-audit sample-app
 ```
+
+On macOS, use native ARM64 Nix/devenv, not Rosetta. The environment selects the
+ARM64 Android image and the emulator uses macOS's built-in Hypervisor.Framework;
+Linux uses the x86_64 image and KVM. Intel Macs are not supported by the pinned
+Nix Flutter/Android packages. Android Studio is not required.
+The CLI checks the declared image and hardware acceleration before building.
 
 The command builds the debug APK, creates and boots a disposable Android 36 AVD,
 installs a session-only system CA (including Android's Conscrypt trust store),
@@ -74,8 +80,10 @@ setup; keep its version compatible with the modules pinned in `devenv.yaml`.
 ## Amp orbs: build and test, not Android emulation
 
 **Amp orbs have no KVM. They cannot run the Android emulator in this setup.**
-Use a KVM-capable Linux development machine or connected runner for an emulator,
-or a real Android device. A browser/mobile viewport is not an Android emulator.
+Use an Apple Silicon Mac or KVM-capable Linux development machine for an emulator.
+Amp agents working in orbs use the `thekorn-amp-runner` runner for native emulator
+verification. Agents on Apple Silicon Macs may run the emulator directly.
+A browser/mobile viewport is not an Android emulator.
 
 `.agents/setup` installs checksum-verified Nix 2.35.2 in single-user mode (no
 daemon), installs devenv from the locked nixpkgs revision, and realizes the full
@@ -115,9 +123,10 @@ orbs use them. A local commit alone does not activate setup for future orbs.
 
 ## Run a Flutter app on an Android emulator (outside an orb)
 
-The optional emulator configuration targets **x86_64 Linux with accessible
-`/dev/kvm`**. It is not enabled automatically and is not tested inside orbs.
-On that host, create the ignored `devenv.local.nix`:
+The optional emulator configuration targets **Apple Silicon macOS** or
+**x86_64 Linux with accessible `/dev/kvm`**. It is not enabled automatically and
+must not be enabled inside orbs. On a supported host, create the ignored
+`devenv.local.nix`:
 
 ```nix
 {
@@ -130,7 +139,7 @@ Enter `devenv shell`, verify hardware acceleration, and create the AVD once:
 ```bash
 emulator -accel-check
 avdmanager create avd --name network-audit \
-  --package 'system-images;android-36;google_apis;x86_64'
+  --package "$NETWORK_AUDIT_SYSTEM_IMAGE"
 emulator -avd network-audit
 ```
 
@@ -145,4 +154,5 @@ flutter run -d <device-id>
 
 From `sample-app`, build without a device using `flutter build apk --debug`;
 run static checks with `flutter analyze` and unit/widget tests with `flutter test`.
-Use the `thekorn-amp-runner` runner for native emulator verification in Amp.
+In an Amp orb, use `thekorn-amp-runner` for native emulator verification; on an
+Apple Silicon Mac, the emulator can run directly.

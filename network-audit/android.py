@@ -1,9 +1,11 @@
 """An owned, ephemeral API 36 AVD. No existing devices or AVDs are modified."""
 
 import os
+import platform
 import re
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -12,6 +14,43 @@ def run(args, *, timeout=60, **kwargs):
     return subprocess.run(
         args, check=True, text=True, capture_output=True, timeout=timeout, **kwargs
     ).stdout.strip()
+
+
+def check_emulator():
+    """Fail before building an APK; return the image declared by devenv."""
+    machine = platform.machine()
+    if sys.platform == "darwin" and machine in ("arm64", "aarch64"):
+        acceleration = "macOS Hypervisor.Framework"
+    elif sys.platform == "linux" and machine == "x86_64":
+        acceleration = "Linux KVM"
+        if not os.access("/dev/kvm", os.R_OK | os.W_OK):
+            raise RuntimeError(
+                "Linux requires readable/writable /dev/kvm. "
+                "In Amp use thekorn-amp-runner; never run an emulator in an orb."
+            )
+    else:
+        raise RuntimeError(
+            f"Unsupported host: {sys.platform}/{machine}. Use an Apple Silicon Mac "
+            "or an x86_64 Linux KVM host. The pinned Nix toolchain does not support "
+            "Intel Macs; on Apple Silicon use native ARM64 Nix, not Rosetta."
+        )
+    image = os.environ.get("NETWORK_AUDIT_SYSTEM_IMAGE")
+    sdk = os.environ.get("ANDROID_HOME")
+    if not image or not sdk:
+        raise RuntimeError("Enter devenv with androidEmulator.enable = true.")
+    if not (Path(sdk).joinpath(*image.split(";")) / "package.xml").is_file():
+        raise RuntimeError(
+            f"Missing {image}. Set androidEmulator.enable = true and re-enter devenv; "
+            "do not install SDK components into /nix/store manually."
+        )
+    try:
+        run(["emulator", "-accel-check"], timeout=30)
+    except subprocess.CalledProcessError as error:
+        detail = "\n".join(
+            part.strip() for part in (error.stdout, error.stderr) if part
+        )
+        raise RuntimeError(f"{acceleration} is unavailable: {detail}") from error
+    return image
 
 
 def wait_for(check, description, timeout=180):
@@ -41,11 +80,12 @@ def emulator_port():
 
 
 class Emulator:
-    def __init__(self, temporary, log, proxy_port, headless):
+    def __init__(self, temporary, log, proxy_port, headless, system_image):
         self.root = Path(temporary)
         self.log = log
         self.proxy_port = proxy_port
         self.headless = headless
+        self.system_image = system_image
         self.process = None
         self.port = emulator_port()
         self.serial = f"emulator-{self.port}"
@@ -67,7 +107,7 @@ class Emulator:
                 "--name",
                 "network-audit",
                 "--package",
-                "system-images;android-36;google_apis;x86_64",
+                self.system_image,
             ],
             env=env,
             input="no\n",
@@ -79,6 +119,8 @@ class Emulator:
             "network-audit",
             "-port",
             str(self.port),
+            "-accel",
+            "on",
             "-no-snapshot",
             "-no-boot-anim",
             "-no-audio",

@@ -6,9 +6,9 @@ app modification, proxy override or `badCertificateCallback` is needed.
 
 ## Run
 
-On an x86_64 Linux machine with readable/writable `/dev/kvm`, set
-`androidEmulator.enable = true;` in the repository's ignored `devenv.local.nix`.
-Enter `devenv shell` from the repository root:
+On an Apple Silicon Mac or an x86_64 Linux machine with readable/writable
+`/dev/kvm`, set `androidEmulator.enable = true;` in the repository's ignored
+`devenv.local.nix`. Enter `devenv shell` from the repository root:
 
 ```sh
 network-audit sample-app
@@ -19,7 +19,17 @@ network-audit /path/to/app.apk --domain api.example.com
 The app argument is a Flutter project directory with a committed `pubspec.lock`,
 or an already-built APK with a launcher activity. Package and activity names are
 read from the APK, not guessed from the source. This version uses the declared
-API 36 Google APIs x86_64 image, not Google Play or physical devices.
+API 36 Google APIs image: ARM64 (`arm64-v8a`) on Apple Silicon, `x86_64` on Linux,
+not Google Play or physical devices. Prebuilt APKs must support the selected ABI
+(or contain no native code); the default Flutter build includes both.
+
+macOS uses its built-in Hypervisor.Framework, not `/dev/kvm`. Run Nix/devenv
+natively on Apple Silicon, not under Rosetta; Intel Macs are not supported by
+the pinned Nix Flutter/Android packages. Android Studio is not required for this
+Android workflow. `emulator -accel-check` should report
+that Hypervisor.Framework is usable. The CLI checks acceleration and the image
+before starting the build. The image is selected by devenv via
+`NETWORK_AUDIT_SYSTEM_IMAGE`; do not override it or install SDK components by hand.
 
 Put defaults in the app directory (or beside an APK) as `network-audit.toml`:
 
@@ -91,8 +101,10 @@ network-audit report .network-audit/runs/<session>
 
 ## Limits
 
-- Linux/KVM and the declared rootable API 36 image only. Never enable or run
-  the emulator in an Amp orb; use `thekorn-amp-runner` for native verification.
+- Apple Silicon macOS/Hypervisor.Framework or x86_64 Linux/KVM and the declared
+  rootable API 36 image only. Never enable or run the emulator in an Amp orb;
+  agents working in orbs use `thekorn-amp-runner` for native verification. Agents
+  on Apple Silicon Macs may run the emulator directly.
 - No bypass of certificate pinning, custom certificate stores, mutual TLS or
   apps that explicitly reject interception. TLS failures appear as diagnostics
   when the selected hostname is known, not as invented HTTP responses.
@@ -125,7 +137,9 @@ interpreter so Jinja2 and mitmproxy imports resolve.
 The tests use real mitmdump and local HTTP/TLS servers. They check hostname
 boundaries, compressed responses, repeated headers, binary POSTs, upstream
 disconnects, truncation versus full raw flows, safe HTML, and CONNECT-to-IP with
-hostname SNI and trusted certificates (the emulator's proxy transport).
+hostname SNI and trusted certificates (the emulator's proxy transport). Host
+preflight tests cover macOS without KVM, Linux with/without KVM, unsupported
+hosts, missing system images and unavailable hardware acceleration.
 
 Native acceptance: run `network-audit sample-app`, verify ten successful
 `dummyjson.com/products/<1..10>` responses, open BUNTE and inspect its responses,

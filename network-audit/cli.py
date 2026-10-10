@@ -16,7 +16,7 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from android import Emulator, apk_identity, wait_for
+from android import Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
 from report import generate_report
 
@@ -88,10 +88,6 @@ def audit(args):
     domains = normalize_domains(
         args.domain if args.domain is not None else config.get("domains", [])
     )
-    if sys.platform != "linux" or not os.access("/dev/kvm", os.R_OK | os.W_OK):
-        raise RuntimeError(
-            "A KVM-capable Linux host is required. In Amp use thekorn-amp-runner; never run an emulator in an orb."
-        )
     for tool in (
         "adb",
         "emulator",
@@ -102,8 +98,10 @@ def audit(args):
     ):
         if not shutil.which(tool):
             raise RuntimeError(
-                f"Missing {tool}. Enter devenv with androidEmulator.enable = true on the KVM host."
+                f"Missing {tool}. Enter devenv with androidEmulator.enable = true "
+                "on an Apple Silicon Mac or x86_64 Linux KVM host."
             )
+    system_image = check_emulator()
     if app.is_dir():
         if not (app / "pubspec.lock").exists():
             raise ValueError("Flutter projects must have a committed pubspec.lock")
@@ -193,7 +191,9 @@ def audit(args):
                     ).exists()
 
                 wait_for(proxy_ready, "mitmproxy", timeout=30)
-                emulator = Emulator(temporary, emulator_log, port, args.headless)
+                emulator = Emulator(
+                    temporary, emulator_log, port, args.headless, system_image
+                )
                 print("Booting a disposable Android API 36 emulator…", flush=True)
                 emulator_process = emulator.start()
                 emulator.install_ca(ca_dir / "mitmproxy-ca-cert.pem")

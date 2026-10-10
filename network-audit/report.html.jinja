@@ -285,6 +285,22 @@
       .message {
         min-width: 0;
       }
+      .query-params {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        background: var(--subtle);
+        font: 12px/1.65 var(--mono);
+      }
+      .query-params th,
+      .query-params td {
+        border: 1px solid var(--border);
+        padding: 8px 14px;
+        text-align: left;
+        vertical-align: top;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
       pre {
         background: var(--subtle);
         border: 1px solid var(--border);
@@ -531,7 +547,7 @@
           return body;
         }
       }
-      function message(title, value) {
+      function message(title, value, urlParts) {
         const section = el("section", undefined, "message");
         section.append(el("h3", title));
         if (!value) {
@@ -545,6 +561,47 @@
             "notice",
           ),
         );
+        if (urlParts !== undefined) {
+          section.append(
+            el("h3", "Path"),
+            el("pre", urlParts ? urlParts.path : "(URL could not be parsed)"),
+          );
+          const query = el("details");
+          query.open = true;
+          query.append(
+            el(
+              "summary",
+              urlParts
+                ? `Query parameters (${urlParts.query.length})`
+                : "Query parameters",
+            ),
+          );
+          if (urlParts && urlParts.query.length) {
+            const table = el("table", undefined, "query-params");
+            table.setAttribute("aria-label", "Query parameters");
+            const head = el("thead"),
+              headings = el("tr"),
+              body = el("tbody");
+            for (const label of ["Key", "Value"]) {
+              const heading = el("th", label);
+              heading.scope = "col";
+              headings.append(heading);
+            }
+            head.append(headings);
+            for (const [key, value] of urlParts.query) {
+              const row = el("tr");
+              row.append(el("td", key), el("td", value));
+              body.append(row);
+            }
+            table.append(head, body);
+            query.append(table);
+          } else {
+            query.append(
+              el("pre", urlParts ? "(none)" : "(URL could not be parsed)"),
+            );
+          }
+          section.append(query);
+        }
         const headers = el("details");
         headers.open = true;
         headers.append(
@@ -630,7 +687,7 @@
             if (f.error) detail.append(el("p", f.error, "error"));
             const messages = el("div", undefined, "messages");
             messages.append(
-              message("Request", f.request),
+              message("Request", f.request, f.url_parts),
               message("Response", f.response),
             );
             detail.append(messages);
@@ -639,7 +696,7 @@
           container.append(row);
         });
         document.getElementById("shown").textContent =
-          `${selected.length} of ${flows.length} exchanges · Select a row to inspect headers and body`;
+          `${selected.length} of ${flows.length} exchanges · Select a row to inspect path, query parameters, headers and body`;
         document.getElementById("empty").hidden = selected.length !== 0;
       }
       search.addEventListener("input", render);

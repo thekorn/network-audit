@@ -370,9 +370,11 @@ Each run creates `.network-audit/runs/<UTC timestamp>-<unique suffix>/` with mod
 with a private umask:
 
 - `report.html`: self-contained offline report with host/status/search filters,
-  expandable request/response headers, trailers, text or base64 bodies, status,
-  timing, wire sizes and diagnostics. Untrusted content is escaped and rendered
-  as text, never as HTML. Binary content is not executed or embedded.
+  request paths and decoded query parameters as key/value pairs, expandable
+  request/response headers, trailers, text or base64 bodies, status, timing,
+  wire sizes and diagnostics. Paths retain their URL encoding; query parameters
+  preserve order, duplicate keys and empty values. Untrusted content is escaped
+  and rendered as text, never as HTML. Binary content is not executed or embedded.
 - `report.txt`: request counts per captured hostname, most frequent first, plus
   a total. Subdomains stay separate. Each request counts once, including failed
   and unfinished requests; TLS diagnostics are not requests. The same summary

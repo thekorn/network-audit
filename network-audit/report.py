@@ -3,6 +3,7 @@
 import json
 from collections import Counter
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -30,6 +31,15 @@ def generate_report(session):
     session = Path(session)
     metadata = json.loads((session / "session.json").read_text())
     flows, diagnostics = read_events(session / "events.jsonl")
+    for flow in flows:
+        try:
+            url = urlsplit(flow.get("url", ""))
+            flow["url_parts"] = {
+                "path": url.path or "/",
+                "query": parse_qsl(url.query, keep_blank_values=True),
+            }
+        except ValueError:
+            flow["url_parts"] = None
     if metadata.get("failure"):
         diagnostics.insert(0, metadata["failure"])
     if not flows:

@@ -1494,6 +1494,76 @@ class ReportTest(unittest.TestCase):
             self.assertTrue(result.stdout.endswith(summary))
             self.assertIn("Summary contract", (path / "report.html").read_text())
 
+    def test_report_parses_paths_and_ordered_query_pairs_without_changing_capture(self):
+        cases = [
+            (
+                "https://api.test/a/../items%2Fspecial;v=1?"
+                "q=red+shoes&tag=first&tag=second&empty=&flag&=unnamed&"
+                "encoded=%252F%2B%26%3D&na%20me=%C3%BC&"
+                "html=%3C%2Fscript%3E%3Cimg+src%3Dx%3E#ignored=fragment",
+                {
+                    "path": "/a/../items%2Fspecial;v=1",
+                    "query": [
+                        ["q", "red shoes"],
+                        ["tag", "first"],
+                        ["tag", "second"],
+                        ["empty", ""],
+                        ["flag", ""],
+                        ["", "unnamed"],
+                        ["encoded", "%2F+&="],
+                        ["na me", "ü"],
+                        ["html", "</script><img src=x>"],
+                    ],
+                },
+            ),
+            ("https://api.test", {"path": "/", "query": []}),
+            ("https://api.test/health?", {"path": "/health", "query": []}),
+            (
+                "https://api.test/?bad=%ZZ&utf8=%FF",
+                {"path": "/", "query": [["bad", "%ZZ"], ["utf8", "�"]]},
+            ),
+            ("https://[invalid/path?x=1", None),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "session.json").write_text(
+                json.dumps(
+                    {
+                        "app": "URL details",
+                        "domains": ["api.test"],
+                        "started": "2026-10-10T10:00:00Z",
+                        "state": "complete",
+                    }
+                )
+            )
+            events = "\n".join(
+                json.dumps(
+                    {
+                        "id": str(index),
+                        "host": "api.test",
+                        "url": url,
+                        "started": index,
+                        "response": None,
+                        "error": None,
+                    }
+                )
+                for index, (url, _) in enumerate(cases)
+            )
+            (path / "events.jsonl").write_text(events)
+            report = generate_report(path).read_text()
+            data = re.search(
+                r'<script type="application/json" id="audit-data">(.*?)</script>',
+                report,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(data)
+            assert data is not None
+            flows = json.loads(data[1])["flows"]
+            self.assertEqual([flow["url_parts"] for flow in flows], [c[1] for c in cases])
+            self.assertEqual([flow["url"] for flow in flows], [c[0] for c in cases])
+            self.assertNotIn("</script><img", report)
+            self.assertEqual((path / "events.jsonl").read_text(), events)
+
     def test_event_recovery_keeps_latest_state_and_sorts_by_start_time(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"

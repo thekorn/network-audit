@@ -81,13 +81,18 @@ in
 
           "test:android-sdk".exec = ''
             set -euo pipefail
+            test -f "$ANDROID_HOME/platforms/android-34/android.jar"
+            test -f "$ANDROID_HOME/platforms/android-35/android.jar"
             test -f "$ANDROID_HOME/platforms/android-36/android.jar"
             test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
+            test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
             test -f "$ANDROID_NDK_ROOT/source.properties"
             test -d "$ANDROID_HOME/cmake/3.22.1"
             ${lib.optionalString config.androidEmulator.enable ''
               test -x "$ANDROID_HOME/emulator/emulator"
               test -f "$ANDROID_HOME/system-images/android-36/google_apis/${emulatorAbi}/package.xml"
+              test ! -d "$ANDROID_HOME/system-images/android-34"
+              test ! -d "$ANDROID_HOME/system-images/android-35"
             ''}
           '';
 

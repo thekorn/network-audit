@@ -176,9 +176,12 @@ See [tool usage, configuration, limits and tests](network-audit/README.md).
 and devenv modules for development. Both initially select the same nixpkgs
 revision, and `nix/toolchain.nix` shares the SDK versions and environment between
 them. The current environment provides
-Flutter 3.47.7 stable (Dart 3.13.5), devenv 2.4.0, JDK 17, Android API 36,
-build-tools 36.0.0, NDK 28.2.13676358, CMake 3.22.1, `adb`, `sdkmanager`, and
-`avdmanager`. These Android versions match the Flutter starter project's requirements.
+Flutter 3.47.7 stable (Dart 3.13.5), devenv 2.4.0, JDK 17, Android APIs 34–36,
+build-tools 35.0.0 and 36.0.0, NDK 28.2.13676358, CMake 3.22.1, `adb`,
+`sdkmanager`, and `avdmanager`. API 36 and build-tools 36.0.0 remain the defaults;
+older platforms and build-tools are also bundled for plugins that request them.
+The emulator still uses API 36, and network-audit's APK inspection and AAPT2
+override still use build-tools 36.0.0.
 Android SDK licenses are accepted declaratively; entering the environment assumes
 you accept the [Android SDK license](https://developer.android.com/studio/terms).
 Flutter analytics are disabled.

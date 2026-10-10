@@ -15,7 +15,12 @@ let
   };
   android = androidEnv.composeAndroidPackages {
     platformVersions = [ "36" ];
-    buildToolsVersions = [ buildToolsVersion ];
+    # Plugins can request AGP's older default even when the app uses API 36.
+    # Gradle cannot install missing versions into this immutable SDK.
+    buildToolsVersions = [
+      "35.0.0"
+      buildToolsVersion
+    ];
     includeNDK = true;
     ndkVersions = [ ndkVersion ];
     cmakeVersions = [ "3.22.1" ];
@@ -25,7 +30,24 @@ let
     systemImageTypes = [ "google_apis" ];
     abiVersions = [ emulatorAbi ];
   };
-  androidHome = "${android.androidsdk}/libexec/android-sdk";
+  # Plugins can pin older compile SDKs too. Compose these separately because
+  # nixpkgs also uses platformVersions to select multi-gigabyte system images.
+  # Only API 36 should bring an emulator image into the full package.
+  compatibilityPlatforms =
+    (androidEnv.composeAndroidPackages {
+      platformVersions = [
+        "34"
+        "35"
+      ];
+    }).platforms;
+  androidSdk = android.androidsdk.override (old: {
+    postInstall =
+      old.postInstall
+      + pkgs.lib.concatMapStrings (platform: ''
+        ln -s ${platform}/libexec/android-sdk/platforms/* "$ANDROID_HOME/platforms/"
+      '') compatibilityPlatforms;
+  });
+  androidHome = "${androidSdk}/libexec/android-sdk";
 in
 {
   inherit buildToolsVersion emulatorAbi;
@@ -33,7 +55,7 @@ in
   packages = [
     flutter
     pkgs.jdk17
-    android.androidsdk
+    androidSdk
     android.platform-tools
   ];
 

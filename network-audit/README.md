@@ -46,6 +46,10 @@ selects the SDK. Without the flag, the CLI uses `flutter` as before. FVM is not
 bundled with network-audit; a missing `fvm` executable produces an error rather
 than falling back to `flutter`. The flag is ignored for prebuilt APKs, which
 require neither Flutter nor FVM. The Android SDK and emulator remain unchanged.
+The bundled Android SDK includes platforms 34, 35 and 36 plus build-tools 35.0.0
+and 36.0.0. FVM does not add other Android SDK components: if a project requires
+another version, it must be declared in the Nix toolchain, not installed into
+the read-only `/nix/store` by Gradle or `sdkmanager`.
 
 macOS uses its built-in Hypervisor.Framework, not `/dev/kvm`. Run Nix/devenv
 natively on Apple Silicon, not under Rosetta; Intel Macs are not supported by

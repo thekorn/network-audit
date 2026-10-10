@@ -25,7 +25,7 @@ from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
-from scenario import run_scenario, validate_scenario
+from scenario import RUNNER, run_scenario, validate_scenario
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -346,6 +346,97 @@ class ScenarioAuditTest(unittest.TestCase):
 
 
 class ScenarioProcessTest(unittest.TestCase):
+    def test_native_android_locators_use_accessibility_labels_and_webview_children(self):
+        # Exercise the packaged driver through real Mobilewright locators and a
+        # subprocess CLI boundary. The device's accessibility service is the fixture.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dump = root / "dump.json"
+            binary = root / "mobilecli fixture"
+            attributes = {
+                "text": "",
+                "content-desc": "",
+                "rect": {"x": 19, "y": 83, "width": 211, "height": 37},
+                "visible": True,
+                "enabled": True,
+                "children": None,
+            }
+            hierarchy = [
+                {
+                    **attributes,
+                    "class": "android.widget.FrameLayout",
+                    "children": [
+                        {
+                            **attributes,
+                            "class": "android.widget.Button",
+                            "content-desc": "BUNTE, Tab 2 of 2",
+                        },
+                        {
+                            **attributes,
+                            "class": "android.webkit.WebView",
+                            "children": [
+                                {
+                                    **attributes,
+                                    "class": "android.widget.Button",
+                                    "text": "AKZEPTIEREN",
+                                    "resource-id": "consent-accept",
+                                }
+                            ],
+                        },
+                        {
+                            **attributes,
+                            "class": "android.widget.Button",
+                            "text": "Hidden button",
+                            "visible": False,
+                        },
+                    ],
+                }
+            ]
+            dump.write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "data": {"rawData": json.dumps({"hierarchy": hierarchy})},
+                    }
+                )
+            )
+            binary.write_text(
+                f"#!{shutil.which('node')}\n"
+                + """
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[args.indexOf('--device') + 1] !== 'owned-device' ||
+    args[args.indexOf('--format') + 1] !== 'raw') process.exit(1);
+process.stdout.write(fs.readFileSync(__dirname + '/dump.json'));
+"""
+            )
+            binary.chmod(0o700)
+            script = """
+import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { Screen } from 'mobilewright';
+import { NativeAndroidDriver } from './native-android-driver.mjs';
+const driver = new NativeAndroidDriver({
+  deviceId: 'owned-device', mobilecliPath: process.argv[1],
+});
+const screen = new Screen(driver);
+assert.equal(await screen.getByRole('button', { name: /^BUNTE/ }).isVisible(), true);
+assert.equal(await screen.getByText(/^akzeptieren$/i).isVisible(), true);
+assert.equal(await screen.getByTestId('consent-accept').isVisible(), true);
+assert.equal(await screen.getByText('Hidden button').isVisible(), false);
+assert.equal(await screen.getByText('Absent button').isVisible(), false);
+writeFileSync(process.argv[2], JSON.stringify({ data: { rawData: '<hierarchy/>' } }));
+await assert.rejects(driver.getViewHierarchy(), /DeviceServer JSON hierarchy/);
+"""
+            result = subprocess.run(
+                ["node", "--input-type=module", "-e", script, str(binary), str(dump)],
+                cwd=RUNNER.parent,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_invalid_modules_fail_before_connecting_to_a_device(self):
         with tempfile.TemporaryDirectory() as directory:
             session = Path(directory)

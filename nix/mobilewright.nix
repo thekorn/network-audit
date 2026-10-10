@@ -16,6 +16,7 @@ buildNpmPackage {
       ../network-audit/mobilewright/package.json
       ../network-audit/mobilewright/package-lock.json
       ../network-audit/mobilewright/runner.mjs
+      ../network-audit/mobilewright/native-android-driver.mjs
     ];
   };
   npmDepsHash = "sha256-JLrgxB8APR1wB45NQDXS5DbMmoyRQ3rDH/dIwouzfaU=";
@@ -25,7 +26,7 @@ buildNpmPackage {
   installPhase = ''
     runHook preInstall
     mkdir -p "$out"
-    cp runner.mjs package.json package-lock.json "$out/"
+    cp runner.mjs native-android-driver.mjs package.json package-lock.json "$out/"
     cp -R node_modules "$out/node_modules"
     runHook postInstall
   '';

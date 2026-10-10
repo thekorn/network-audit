@@ -51,6 +51,31 @@ and 36.0.0. FVM does not add other Android SDK components: if a project requires
 another version, it must be declared in the Nix toolchain, not installed into
 the read-only `/nix/store` by Gradle or `sdkmanager`.
 
+### Flutter flavors
+
+Select an Android product flavor already configured in your Flutter project:
+
+```sh
+network-audit /path/to/flutter-project --domain api.example.com --flavor staging
+```
+
+For scenario runs, the TOML can provide the default instead:
+
+```toml
+executor = "browse.mjs"
+flavor = "staging"
+```
+
+An explicit `--flavor` **replaces** the scenario's `flavor`. Both require a
+non-blank string and a Flutter project; prebuilt APKs reject flavor settings
+because they cannot be rebuilt. The scenario field must be valid even when
+overridden. Flutter/Gradle validates whether the selected flavor exists.
+
+The selected identifier is forwarded unchanged to `flutter build apk --debug
+--no-pub --flavor <identifier>` (or `fvm flutter` with `--use-fvm`), alongside any
+Dart define files. The audit installs the matching APK, using Flutter's lowercase
+filename convention: `freeStaging` selects `app-freestaging-debug.apk`.
+
 ### Flutter environment values
 
 Pass Flutter's `--dart-define-from-file` option to bake configuration into the
@@ -143,6 +168,7 @@ TOML against the bundled [JSON Schema](scenario.schema.json). `executor` is
 required and must name a trusted JavaScript file (`.js` or `.mjs`). `domains` is
 optional; when present, it must be a non-empty list of hostnames. The optional
 `env-file` selects [Flutter environment values](#flutter-environment-values).
+The optional `flavor` selects a [Flutter build flavor](#flutter-flavors).
 Unknown fields are rejected so a typo cannot silently turn off filtering.
 
 The optional `dimensions` sets the disposable emulator's display **before boot**,

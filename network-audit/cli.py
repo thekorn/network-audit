@@ -35,6 +35,11 @@ def parser():
         help="Use 'fvm flutter' for Flutter project builds (ignored for APKs)",
     )
     result.add_argument(
+        "--flavor",
+        metavar="IDENTIFIER",
+        help="Flutter build flavor; overrides scenario flavor; not for APKs",
+    )
+    result.add_argument(
         "--dart-define-from-file",
         action="append",
         default=[],
@@ -118,12 +123,23 @@ def audit(args):
         raise ValueError("--scenario-timeout must be positive and finite")
     scenario = args.scenario.resolve() if args.scenario else None
     if scenario:
-        domains, executor, env_file, dimensions = load_scenario(scenario)
+        domains, executor, env_file, dimensions, flavor = load_scenario(scenario)
     else:
         domains = None
         executor = None
         env_file = None
         dimensions = None
+        flavor = None
+    if args.flavor is not None:
+        flavor = args.flavor
+    if flavor is not None:
+        if not flavor.strip():
+            raise ValueError("--flavor must be a non-blank identifier")
+        if not app.is_dir():
+            raise ValueError(
+                "Flavor configuration (--flavor or scenario flavor) "
+                "requires a Flutter project, not an APK"
+            )
     define_files = [
         Path(path).resolve()
         for value in args.dart_define_from_file
@@ -173,12 +189,14 @@ def audit(args):
                 "apk",
                 "--debug",
                 "--no-pub",
+                *(["--flavor", flavor] if flavor is not None else []),
                 *(f"--dart-define-from-file={path}" for path in define_files),
             ],
             cwd=app,
             check=True,
         )
-        apk = app / "build/app/outputs/flutter-apk/app-debug.apk"
+        apk_name = f"app-{flavor.lower()}-debug.apk" if flavor is not None else "app-debug.apk"
+        apk = app / "build/app/outputs/flutter-apk" / apk_name
     else:
         apk = app
     package, activity = apk_identity(apk)

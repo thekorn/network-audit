@@ -47,7 +47,13 @@ def load_scenario(path):
         if "dimensions" in config
         else None
     )
-    return domains, validate_executor(path.parent / config["executor"]), env_file, dimensions
+    return (
+        domains,
+        validate_executor(path.parent / config["executor"]),
+        env_file,
+        dimensions,
+        config.get("flavor"),
+    )
 
 
 def validate_executor(path):

@@ -87,6 +87,11 @@ Quote paths containing spaces, for example
 `devenv shell audit '../my app' --domain api.example.com`.
 Add `--headless` to hide the emulator window.
 
+For Flutter projects with Android product flavors, add `--flavor staging` to
+build and audit that flavor. This also works with `--use-fvm`; a CLI flavor
+overrides an optional scenario `flavor = "staging"`. Flavor settings are not
+accepted with prebuilt APKs. See [Flutter flavors](network-audit/README.md#flutter-flavors).
+
 Add `--record` to save a silent `recording.mp4` of the emulator screen beside
 the report. It works with manual and scenario runs, including `--headless`,
 and saves on Ctrl+C or normal completion. See
@@ -161,9 +166,9 @@ dimensions = { width = 1280, height = 2856, density = 480 }
 Executor paths resolve relative to the TOML file. The CLI no longer reads an
 app-wide `network-audit.toml`; manual runs use `--domain`, which can also override
 a scenario's domain list. Scenarios are validated against a bundled JSON Schema
-before the audit starts: `executor` is required; `domains`, `env-file`, and
-`dimensions` are optional, and unknown fields are rejected. Omit `domains` to
-capture all HTTP(S) requests reaching the proxy across the dedicated emulator;
+before the audit starts: `executor` is required; `domains`, `env-file`, `flavor`,
+and `dimensions` are optional, and unknown fields are rejected. Omit `domains`
+to capture all HTTP(S) requests reaching the proxy across the dedicated emulator;
 an explicitly empty list is invalid.
 
 `dimensions` configures the fresh emulator before boot: width and height are

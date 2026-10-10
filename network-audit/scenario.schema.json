@@ -15,6 +15,11 @@
       "type": "string",
       "pattern": "\\S"
     },
+    "flavor": {
+      "description": "Flutter build flavor. CLI --flavor replaces this default; requires a Flutter project, not a prebuilt APK.",
+      "type": "string",
+      "pattern": "\\S"
+    },
     "dimensions": {
       "description": "Emulator display width and height in pixels and density in dpi. Omit to keep the emulator defaults.",
       "type": "object",

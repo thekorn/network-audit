@@ -230,20 +230,25 @@ class AuditSessionTest(unittest.TestCase):
                     self.assertEqual(elapsed[0], 5)
 
     def test_flutter_build_uses_selected_executable_in_project_directory(self):
-        for (options, tool, prefix), define_mode in product(
+        build_cases = [
+            (mode, None, None, None, "app-debug.apk")
+            for mode in (
+                "none", "single", "repeated", "comma-separated",
+                "scenario-relative", "scenario-absolute", "scenario-override",
+            )
+        ] + [
+            ("single", None, "freeStaging", "freeStaging", "app-freestaging-debug.apk"),
+            ("scenario-relative", "staging", None, "staging", "app-staging-debug.apk"),
+            ("scenario-relative", None, "dev", "dev", "app-dev-debug.apk"),
+            ("scenario-override", "staging", "paidProd", "paidProd", "app-paidprod-debug.apk"),
+        ]
+        for (options, tool, prefix), build_case in product(
             (([], "flutter", []), (["--use-fvm"], "fvm", ["flutter"])),
-            (
-                "none",
-                "single",
-                "repeated",
-                "comma-separated",
-                "scenario-relative",
-                "scenario-absolute",
-                "scenario-override",
-            ),
+            build_cases,
         ):
+            define_mode, scenario_flavor, cli_flavor, expected_flavor, apk_name = build_case
             with (
-                self.subTest(tool=tool, define_mode=define_mode),
+                self.subTest(tool=tool, build_case=build_case),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory).resolve()
@@ -295,6 +300,7 @@ class AuditSessionTest(unittest.TestCase):
                     env_file = str(base) if define_mode == "scenario-absolute" else f"../{base.name}"
                     scenario.write_text(
                         f'executor = "browse.mjs"\nenv-file = {json.dumps(env_file)}\n'
+                        + (f'flavor = {json.dumps(scenario_flavor)}\n' if scenario_flavor else "")
                     )
                     scenario_options = ["--scenario", str(scenario)]
                     if define_mode == "scenario-override":
@@ -304,19 +310,30 @@ class AuditSessionTest(unittest.TestCase):
                 bin_dir = root / "bin"
                 bin_dir.mkdir()
                 executable = bin_dir / tool
-                # Real subprocesses record their argv/cwd; fail the build to
-                # verify errors propagate without starting a capture session.
+                # Real subprocesses record their argv/cwd. Flavor builds succeed
+                # and reach APK inspection; other cases still check build errors.
+                # Both failures must propagate without starting a capture session.
+                apk = app / "build/app/outputs/flutter-apk" / apk_name
+                apk.parent.mkdir(parents=True)
+                apk.write_bytes(b"built APK fixture")
                 executable.write_text(
                     f"#!{sys.executable}\n"
                     "import json, os, sys\n"
                     "from pathlib import Path\n"
-                    "with Path('commands.jsonl').open('a') as log:\n"
+                    f"with Path({str(app / 'commands.jsonl')!r}).open('a') as log:\n"
                     "    log.write(json.dumps([sys.argv[1:], os.getcwd()]) + '\\n')\n"
-                    "sys.exit(42 if 'build' in sys.argv else 0)\n"
+                    "if 'dump' in sys.argv:\n"
+                    "    assert Path(sys.argv[-1]).read_bytes() == b'built APK fixture'\n"
+                    "    sys.exit(42)\n"
+                    f"sys.exit(42 if 'build' in sys.argv and {expected_flavor is None!r} else 0)\n"
                 )
                 executable.chmod(0o755)
                 for name in ("adb", "emulator", "avdmanager", "mitmdump", "openssl"):
                     (bin_dir / name).symlink_to(executable)
+                sdk = root / "sdk"
+                aapt = sdk / "build-tools/36.0.0/aapt"
+                aapt.parent.mkdir(parents=True)
+                aapt.symlink_to(executable)
                 args = parser().parse_args(
                     [
                         str(app),
@@ -327,13 +344,17 @@ class AuditSessionTest(unittest.TestCase):
                         *options,
                         *define_options,
                         *scenario_options,
+                        *(["--flavor", cli_flavor] if cli_flavor is not None else []),
                     ]
                 )
                 with (
                     chdir(root),
                     patch.dict(
                         os.environ,
-                        {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                        {
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            "ANDROID_HOME": str(sdk),
+                        },
                     ),
                     patch("cli.check_emulator", return_value="test-image"),
                     self.assertRaises(subprocess.CalledProcessError) as failure,
@@ -354,11 +375,15 @@ class AuditSessionTest(unittest.TestCase):
                                 "apk",
                                 "--debug",
                                 "--no-pub",
+                                *(["--flavor", expected_flavor] if expected_flavor is not None else []),
                                 *define_arguments,
                             ],
                             str(app),
                         ],
-                    ],
+                    ] + (
+                        [[["dump", "badging", str(apk)], str(root)]]
+                        if expected_flavor is not None else []
+                    ),
                 )
                 self.assertFalse((root / "runs").exists())
 
@@ -406,6 +431,9 @@ class AuditSessionTest(unittest.TestCase):
                     [str(apk), "--dart-define-from-file", str(defines)],
                     "requires a Flutter project, not an APK",
                 ),
+                ([str(apk), "--flavor", "staging"], "requires a Flutter project, not an APK"),
+                ([str(root), "--flavor", ""], "must be a non-blank identifier"),
+                ([str(root), "--flavor", "  "], "must be a non-blank identifier"),
             ]
             for path in (root / "missing.json", root, ""):
                 cases.append(
@@ -421,6 +449,11 @@ class AuditSessionTest(unittest.TestCase):
                     )
                 )
             (root / "executor.mjs").write_text("export default async function () {}\n")
+            flavored = root / "flavored.toml"
+            flavored.write_text('executor = "executor.mjs"\nflavor = "staging"\n')
+            cases.append(
+                ([str(apk), "--scenario", str(flavored)], "requires a Flutter project, not an APK")
+            )
             for name, env_file in (("missing", "missing.env"), ("directory", ".")):
                 scenario = root / f"{name}.toml"
                 scenario.write_text(
@@ -506,6 +539,26 @@ class AuditSessionTest(unittest.TestCase):
                 ),
                 (
                     config,
+                    'executor = "executor.mjs"\nflavor = ""',
+                    "flavor: .*does not match",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nflavor = "  "',
+                    "flavor: .*does not match",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nflavor = 123',
+                    "flavor: .*not of type 'string'",
+                ),
+                (
+                    config,
+                    'executor = "executor.mjs"\nflavor = ["staging"]',
+                    "flavor: .*not of type 'string'",
+                ),
+                (
+                    config,
                     'executor = "executor.mjs"\ndomains = []',
                     "domains: .*should be non-empty",
                 ),
@@ -553,6 +606,7 @@ class AuditSessionTest(unittest.TestCase):
                     for override in (None, ["override.test"]):
                         args.domain = override
                         args.dart_define_from_file = [str(defines)] if override else []
+                        args.flavor = "staging" if override else None
                         with self.assertRaisesRegex(ValueError, message):
                             audit(args)
                     self.assertFalse((root / "runs").exists())
@@ -1242,7 +1296,7 @@ class EmulatorPreflightTest(unittest.TestCase):
                 scenario = root / "scenario.toml"
                 scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
                 (root / "executor.mjs").write_text("export default async function () {}\n")
-                _, _, _, dimensions = load_scenario(scenario)
+                _, _, _, dimensions, _ = load_scenario(scenario)
                 device = Emulator(
                     directory, None, 8080, True, "test-image", dimensions=dimensions
                 )

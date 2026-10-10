@@ -22,3 +22,6 @@ local.properties
 .network-audit/
 .amp/in/
 __pycache__/
+
+# Optional Mobilewright scenario runtime.
+node_modules/

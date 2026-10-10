@@ -5,12 +5,14 @@
   python3,
   mitmproxy,
   openssl,
+  nodejs_24,
   pkgs,
   withToolchain ? false,
 }:
 
 let
   python = python3.withPackages (ps: [ ps.jinja2 ]);
+  mobilewright = pkgs.callPackage ./mobilewright.nix { inherit nodejs_24; };
   toolchain = import ./toolchain.nix {
     inherit pkgs;
     enableEmulator = true;
@@ -18,6 +20,7 @@ let
   runtimePackages = [
     mitmproxy
     openssl
+    nodejs_24
   ]
   ++ lib.optionals withToolchain toolchain.packages;
   environment = lib.optionalString withToolchain (
@@ -36,6 +39,8 @@ stdenvNoCC.mkDerivation {
     python
     mitmproxy
     openssl
+    nodejs_24
+    pkgs.ps
   ];
   dontBuild = true;
 
@@ -43,6 +48,7 @@ stdenvNoCC.mkDerivation {
   checkPhase = ''
     runHook preCheck
     export HOME="$TMPDIR/home"
+    export NETWORK_AUDIT_SCENARIO_RUNNER="${mobilewright}/runner.mjs"
     mkdir -p "$HOME"
     ${python}/bin/python3 -m unittest discover -s tests -v
     runHook postCheck
@@ -55,6 +61,7 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${python}/bin/python3 "$out/bin/network-audit" \
       --add-flags "$out/libexec/network-audit/cli.py" \
       --prefix PATH : ${lib.makeBinPath runtimePackages} \
+      --set NETWORK_AUDIT_SCENARIO_RUNNER "${mobilewright}/runner.mjs" \
       ${environment}
     runHook postInstall
   '';
@@ -71,6 +78,7 @@ stdenvNoCC.mkDerivation {
     env -i HOME="$HOME" "$out/bin/network-audit" report session
     grep -F 'Packaged &lt;APK&gt;' session/report.html
     grep -F 'No matching HTTP exchanges captured' session/report.html
+
     runHook postInstallCheck
   '';
 

@@ -14,6 +14,7 @@ let
   inherit (toolchain) buildToolsVersion emulatorAbi;
   androidHome = toolchain.env.ANDROID_HOME;
   python = pkgs.python3.withPackages (ps: [ ps.jinja2 ]);
+  mobilewright = pkgs.callPackage ./nix/mobilewright.nix { };
 in
 {
   options.androidEmulator.enable = lib.mkEnableOption "the Android emulator and host-native API 36 image (Apple Silicon Macs or KVM-capable x86_64 Linux hosts, never orbs)";
@@ -29,6 +30,7 @@ in
       pkgs.mitmproxy
       pkgs.pyright
       pkgs.openssl
+      pkgs.nodejs_24
     ];
 
     scripts.network-audit.exec = ''
@@ -46,6 +48,7 @@ in
       PUB_CACHE = "${config.devenv.state}/pub-cache";
       GRADLE_USER_HOME = "${config.devenv.state}/gradle";
       NETWORK_AUDIT_DEVENV = config.devenv.root;
+      NETWORK_AUDIT_SCENARIO_RUNNER = "${mobilewright}/runner.mjs";
     };
 
     # Named tasks expose each result in devenv's test output. Keep successful
@@ -68,6 +71,8 @@ in
             java -version
             adb version
             mitmdump --version
+            node --version
+            node "$NETWORK_AUDIT_SCENARIO_RUNNER" --check
             network-audit --help
           '';
 

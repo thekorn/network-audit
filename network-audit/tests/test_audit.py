@@ -14,18 +14,240 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from android import check_emulator
-from cli import parser
+from android import Emulator, apk_identity, check_emulator, wait_for
+from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from report import generate_report, read_events
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class AuditSessionTest(unittest.TestCase):
+    def test_session_outcomes_preserve_reports(self):
+        for outcome, state in (
+            ("closed", "emulator closed"),
+            ("background", "app closed"),
+            ("interrupt", "interrupted by user"),
+            ("launch failure", "failed"),
+            ("proxy failure", "failed"),
+        ):
+            with (
+                self.subTest(outcome=outcome),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                apk = root / "app.apk"
+                apk.touch()
+                (root / "network-audit.toml").write_text('domains = ["config.test"]')
+                args = parser().parse_args(
+                    [
+                        str(apk),
+                        "--output",
+                        str(root / "runs"),
+                        "--domain",
+                        "CLI.test",
+                        "--body-limit",
+                        "37",
+                        "--close-grace",
+                        "2",
+                        "--headless",
+                    ]
+                )
+                proxy = Mock()
+                proxy.poll.return_value = None
+                device = Mock()
+                device.serial = "emulator-5554"
+                device.start.return_value.poll.return_value = (
+                    0 if outcome == "closed" else None
+                )
+                elapsed = [0]
+
+                def sleep(seconds):
+                    elapsed[0] += seconds
+                    self.assertLess(
+                        elapsed[0], 10, "Capture did not finish after leaving the app"
+                    )
+
+                # A brief excursion must not consume the grace period of a
+                # later excursion: the app returns before leaving for good.
+                device.foreground.side_effect = lambda _: elapsed[0] in (0, 2)
+                if outcome == "interrupt":
+                    device.launch.side_effect = KeyboardInterrupt
+                elif outcome == "launch failure":
+                    device.launch.side_effect = subprocess.TimeoutExpired(
+                        "adb", 30, stderr=b"launch timed out\xff"
+                    )
+                elif outcome == "proxy failure":
+                    proxy.poll.side_effect = [None, 1, 1]
+
+                def start_proxy(*_args, **kwargs):
+                    session = Path(kwargs["env"]["NETWORK_AUDIT_SESSION"])
+                    (session / "proxy.ready").touch()
+                    command = _args[0]
+                    ca = Path(
+                        next(
+                            v.split("=", 1)[1]
+                            for v in command
+                            if v.startswith("confdir=")
+                        )
+                    )
+                    ca.mkdir()
+                    (ca / "mitmproxy-ca-cert.pem").touch()
+                    return proxy
+
+                with (
+                    patch("cli.shutil.which", return_value="tool"),
+                    patch("cli.check_emulator", return_value="test-image"),
+                    patch(
+                        "cli.apk_identity", return_value=("org.example.app", ".Main")
+                    ),
+                    patch("cli.subprocess.Popen", side_effect=start_proxy),
+                    patch("cli.Emulator", return_value=device),
+                    patch("cli.time.sleep", side_effect=sleep),
+                    patch("cli.time.monotonic", side_effect=lambda: elapsed[0]),
+                    redirect_stdout(StringIO()) as output,
+                ):
+                    if state == "failed":
+                        with self.assertRaises(RuntimeError):
+                            audit(args)
+                    else:
+                        self.assertEqual(audit(args), 0)
+                (session,) = (root / "runs").iterdir()
+                metadata = json.loads((session / "session.json").read_text())
+                self.assertEqual(metadata["state"], state)
+                self.assertEqual(metadata["domains"], ["cli.test"])
+                self.assertEqual(metadata["body_limit"], 37)
+                self.assertEqual(metadata["device"], "emulator-5554")
+                self.assertIn("ended", metadata)
+                self.assertEqual(session.stat().st_mode & 0o777, 0o700)
+                report = (session / "report.html").read_text()
+                self.assertIn("No matching HTTP exchanges", report)
+                self.assertIn(str(session / "report.html"), output.getvalue())
+                if outcome == "launch failure":
+                    self.assertEqual(metadata["failure"], "launch timed out\ufffd")
+                    self.assertIn("launch timed out", report)
+                elif outcome == "proxy failure":
+                    self.assertIn("mitmdump stopped unexpectedly", metadata["failure"])
+                elif outcome == "background":
+                    self.assertEqual(elapsed[0], 5)
+
+    def test_invalid_inputs_fail_before_creating_a_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            apk = root / "app.apk"
+            apk.touch()
+            cases = [
+                ([str(root / "missing.apk")], "App not found"),
+                ([str(apk)], "No domains configured"),
+                ([str(apk), "--domain", "https://example.com"], "Invalid domain"),
+            ]
+            for option, values in (
+                ("--close-grace", ["0", "-1", "nan", "inf"]),
+                ("--body-limit", ["0", "-1"]),
+            ):
+                cases.extend(
+                    ([str(apk), option, value], "must be positive") for value in values
+                )
+            for arguments, message in cases:
+                with self.subTest(arguments=arguments):
+                    args = parser().parse_args(
+                        arguments + ["--output", str(root / "runs")]
+                    )
+                    with self.assertRaisesRegex(ValueError, message):
+                        audit(args)
+                    self.assertFalse((root / "runs").exists())
+
+    def test_config_domains_and_flutter_lockfile_are_validated_before_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = parser().parse_args([str(root), "--output", str(root / "runs")])
+            config = root / "network-audit.toml"
+            config.write_text('domains = "not-a-list"')
+            with self.assertRaisesRegex(ValueError, "list of hostnames"):
+                audit(args)
+            config.write_text('domains = ["config.test"]')
+            with patch("cli.shutil.which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "Missing adb"):
+                    audit(args)
+            with (
+                patch("cli.shutil.which", return_value="tool"),
+                patch("cli.check_emulator", return_value="test-image"),
+                self.assertRaisesRegex(ValueError, "committed pubspec.lock"),
+            ):
+                audit(args)
+            self.assertFalse((root / "runs").exists())
+
+
+class AndroidOutputTest(unittest.TestCase):
+    def test_apk_identity_requires_safe_package_and_launcher_names(self):
+        for package, activity, error in (
+            ("org.example_app", "org.example_app.Main$Nested", None),
+            ("org.example", ".Main", None),
+            (None, ".Main", "launchable activity"),
+            ("org.example", None, "launchable activity"),
+            ("org.example;bad", ".Main", "Unsupported"),
+            ("org.example", "Main/Other", "Unsupported"),
+        ):
+            info = "sdkVersion:'36'\n"
+            if package is not None:
+                info += f"package: name='{package}' versionCode='1'\n"
+            if activity is not None:
+                info += f"launchable-activity: name='{activity}' label='Example'\n"
+            with (
+                self.subTest(package=package, activity=activity),
+                patch.dict(os.environ, {"ANDROID_HOME": "/unused-sdk"}),
+                patch("android.run", return_value=info),
+            ):
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        apk_identity(Path("app.apk"))
+                else:
+                    self.assertEqual(apk_identity(Path("app.apk")), (package, activity))
+
+    def test_foreground_checks_only_resumed_activity_and_exact_package(self):
+        with patch("android.emulator_port", return_value=5554):
+            device = Emulator("unused", None, 8080, True, "test-image")
+        for activities, expected in (
+            ("mResumedActivity: ActivityRecord{abc u0 org.example/.Main t42}", True),
+            ("topResumedActivity=ActivityRecord{abc u0 org.example/.Main t42}", True),
+            (
+                "mResumedActivity: ActivityRecord{abc u0 org.example.other/.Main t42}",
+                False,
+            ),
+            ("mResumedActivity: ActivityRecord{abc u0 orgXexample/.Main t42}", False),
+            (
+                "mLastPausedActivity: org.example/.Main\nmResumedActivity: other/.Main",
+                False,
+            ),
+            ("", False),
+        ):
+            with (
+                self.subTest(activities=activities),
+                patch.object(device, "shell", return_value=activities),
+            ):
+                self.assertEqual(device.foreground("org.example"), expected)
+
+    def test_wait_for_retries_and_times_out_with_context(self):
+        with (
+            patch("android.time.sleep"),
+            patch("android.time.monotonic", side_effect=range(20)),
+        ):
+            wait_for(Mock(side_effect=[False, True]), "ready", timeout=3)
+        with (
+            patch("android.time.sleep"),
+            patch("android.time.monotonic", side_effect=range(20)),
+            self.assertRaisesRegex(
+                RuntimeError, "Timed out waiting for app foreground"
+            ),
+        ):
+            wait_for(lambda: False, "app foreground", timeout=3)
 
 
 class EmulatorOptionsTest(unittest.TestCase):
@@ -158,6 +380,33 @@ class DomainsTest(unittest.TestCase):
 
 
 class ReportTest(unittest.TestCase):
+    def test_event_recovery_keeps_latest_state_and_sorts_by_start_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            early = {"id": "early", "started": 10, "response": None}
+            late = {"id": "late", "started": 20, "response": None}
+            complete = {**early, "response": {"status": 503}}
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(late),
+                        json.dumps(early),
+                        '{"id":',
+                        json.dumps({"diagnostic": "TLS server failure"}),
+                        json.dumps(complete),
+                    ]
+                )
+            )
+            flows, diagnostics = read_events(path)
+            self.assertEqual(flows, [complete, late])
+            self.assertEqual(
+                diagnostics,
+                [
+                    "Unreadable capture record at line 3 (possibly interrupted write)",
+                    "TLS server failure",
+                ],
+            )
+
     def test_empty_and_interrupted_reports_escape_network_data(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

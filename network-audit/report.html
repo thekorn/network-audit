@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
     <title>@@TITLE@@ · Network audit</title>
+    <script>
+      (() => {
+        let dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        try {
+          const saved = localStorage.getItem("network-audit-theme");
+          if (saved === "dark" || saved === "light") dark = saved === "dark";
+        } catch {}
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
     <style>
       :root {
         color-scheme: light;
@@ -16,7 +26,26 @@
         --accent: #216655;
         --soft: #e5f1ec;
         --bad: #a53530;
+        --subtle: #f4f6f8;
+        --accent-border: #c1d9ce;
+        --bad-border: #e5bab6;
+        --bad-soft: #fbece9;
         --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      html.dark {
+        color-scheme: dark;
+        --bg: #14191f;
+        --surface: #1c242c;
+        --text: #e3eaf0;
+        --muted: #a1afbd;
+        --border: #34424e;
+        --accent: #8fd7bb;
+        --soft: #203d33;
+        --bad: #ffaaa3;
+        --subtle: #161d24;
+        --accent-border: #416956;
+        --bad-border: #7b4c47;
+        --bad-soft: #472d2b;
       }
       * {
         box-sizing: border-box;
@@ -37,6 +66,16 @@
       header {
         border-bottom: 1px solid var(--border);
         padding-bottom: 26px;
+      }
+      .masthead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      #theme {
+        font-size: 12px;
+        white-space: nowrap;
       }
       .eyebrow {
         font: 600 12px var(--mono);
@@ -69,13 +108,18 @@
         color: var(--muted);
       }
       .pill {
-        border: 1px solid #c1d9ce;
+        border: 1px solid var(--accent-border);
         border-radius: 20px;
         background: var(--soft);
         color: var(--accent);
         padding: 4px 12px;
         font-size: 12px;
         font-weight: 650;
+      }
+      .pill[data-state="failed"] {
+        color: var(--bad);
+        border-color: var(--bad-border);
+        background: var(--bad-soft);
       }
       .meta {
         display: flex;
@@ -120,6 +164,9 @@
         margin: 5px 0;
         font-size: 13px;
       }
+      figure {
+        margin: 0;
+      }
       .bars {
         list-style: none;
         padding: 0;
@@ -136,12 +183,16 @@
       .bars span {
         overflow-wrap: anywhere;
       }
+      .bars .empty-hosts {
+        display: block;
+        color: var(--muted);
+      }
       meter {
         width: 100%;
         height: 12px;
       }
       meter::-webkit-meter-bar {
-        background: #edf0f2;
+        background: var(--subtle);
         border: 0;
       }
       meter::-webkit-meter-optimum-value {
@@ -235,7 +286,7 @@
         min-width: 0;
       }
       pre {
-        background: #f4f6f8;
+        background: var(--subtle);
         border: 1px solid var(--border);
         border-radius: 7px;
         padding: 14px;
@@ -260,9 +311,13 @@
       }
       #diagnostics {
         border-left: 3px solid var(--bad);
-        padding: 0 16px;
-        white-space: pre-wrap;
+        padding: 1px 16px;
+        margin-bottom: 24px;
         overflow-wrap: anywhere;
+      }
+      #diagnostics p {
+        margin: 8px 0;
+        white-space: pre-wrap;
       }
       .empty {
         padding: 40px;
@@ -323,10 +378,15 @@
   <body>
     <main>
       <header id="overview">
-        <div class="eyebrow">Network audit / Android capture</div>
+        <div class="masthead">
+          <div class="eyebrow">Network audit / Android capture</div>
+          <button type="button" id="theme" aria-label="Toggle dark mode">
+            Theme
+          </button>
+        </div>
         <div class="title">
           <h1>@@TITLE@@</h1>
-          <span class="pill">@@STATE@@</span>
+          <span class="pill" data-state="@@STATE@@">@@STATE@@</span>
         </div>
         <div class="meta">
           <span class="mono muted">@@PACKAGE@@</span
@@ -350,9 +410,11 @@
       <div class="context">
         <section class="panel" id="hosts">
           <h2>Requests by host</h2>
-          <ul class="bars">
-            @@BARS@@
-          </ul>
+          <figure aria-label="HTTP exchange counts by host">
+            <ul class="bars">
+              @@BARS@@
+            </ul>
+          </figure>
         </section>
         <section class="panel" id="scope">
           <h2>Capture scope</h2>
@@ -408,6 +470,20 @@
     </script>
     <script>
       "use strict";
+      const theme = document.getElementById("theme");
+      function updateTheme() {
+        const dark = document.documentElement.classList.contains("dark");
+        theme.textContent = dark ? "Light mode" : "Dark mode";
+        theme.setAttribute("aria-pressed", String(dark));
+      }
+      theme.addEventListener("click", () => {
+        const dark = document.documentElement.classList.toggle("dark");
+        try {
+          localStorage.setItem("network-audit-theme", dark ? "dark" : "light");
+        } catch {}
+        updateTheme();
+      });
+      updateTheme();
       const { flows } = JSON.parse(
         document.getElementById("audit-data").textContent,
       );

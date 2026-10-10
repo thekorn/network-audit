@@ -62,7 +62,8 @@ def generate_report(session):
         "BARS": "".join(
             f'<li><span>{escape(host)}</span><meter min="0" max="{max(counts.values())}" value="{count}">{count}</meter><b>{count}</b></li>'
             for host, count in counts.most_common()
-        ),
+        )
+        or '<li class="empty-hosts">No matched hosts</li>',
         "DIAGNOSTICS": "".join(f"<p>{escape(d)}</p>" for d in diagnostics),
         "EMPTYDIAGNOSTICS": "false" if diagnostics else "true",
         "DATA": data,

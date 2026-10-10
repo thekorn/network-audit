@@ -129,11 +129,18 @@ class AuditSessionTest(unittest.TestCase):
                 self.assertEqual(session.stat().st_mode & 0o777, 0o700)
                 report = (session / "report.html").read_text()
                 self.assertIn("No matching HTTP exchanges", report)
-                self.assertIn(str(session / "report.html"), output.getvalue())
+                # The CLI resolves symlinks, including macOS's /tmp -> /private/tmp.
+                self.assertIn(
+                    f"Report: {(session / 'report.html').resolve()}",
+                    output.getvalue().splitlines(),
+                )
                 summary = (session / "report.txt").read_text()
                 self.assertIn("No matching HTTP requests captured.", summary)
                 self.assertIn("Total requests: 0", summary)
-                self.assertIn(str(session / "report.txt"), output.getvalue())
+                self.assertIn(
+                    f"Text report: {(session / 'report.txt').resolve()}",
+                    output.getvalue().splitlines(),
+                )
                 self.assertTrue(output.getvalue().endswith(summary))
                 if outcome == "launch failure":
                     self.assertEqual(metadata["failure"], "launch timed out\ufffd")
@@ -461,8 +468,13 @@ class ReportTest(unittest.TestCase):
                 "sub.api.test: 1\n"
                 "Total requests: 5\n",
             )
-            self.assertIn(str(path / "report.html"), result.stdout)
-            self.assertIn(str(path / "report.txt"), result.stdout)
+            self.assertIn(
+                str((path / "report.html").resolve()), result.stdout.splitlines()
+            )
+            self.assertIn(
+                f"Text report: {(path / 'report.txt').resolve()}",
+                result.stdout.splitlines(),
+            )
             self.assertTrue(result.stdout.endswith(summary))
             self.assertIn("Summary contract", (path / "report.html").read_text())
 

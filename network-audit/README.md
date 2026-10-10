@@ -174,9 +174,9 @@ Unknown fields are rejected so a typo cannot silently turn off filtering.
 The optional `dimensions` sets the disposable emulator's display **before boot**,
 so both the app and executor start with the requested size. `width` and `height`
 are pixels, and `density` is dpi. All three are required positive integers;
-the emulator requires an even width. Omit `dimensions` to keep the emulator
-defaults. It works with both windowed and `--headless` runs and does not change
-any existing AVD. A regular TOML table is equivalent to the inline form above:
+the emulator requires an even width. Dimensions work with both windowed and
+`--headless` runs and do not change any existing AVD. A regular TOML table is
+equivalent to the inline form above:
 
 ```toml
 executor = "browse.mjs"
@@ -186,6 +186,29 @@ width = 1280
 height = 2856
 density = 480
 ```
+
+For a predefined size, use a shortcut instead of a table:
+
+```toml
+executor = "browse.mjs"
+dimensions = "big"
+```
+
+The only shortcut currently supported is `big`, equivalent to
+`{ width = 1280, height = 2856, density = 480 }`. Shortcut names are case-sensitive
+and must be quoted strings in TOML. Unknown names are rejected.
+
+For either manual or scenario runs, select a shortcut on the command line:
+
+```sh
+network-audit /path/to/app.apk --domain api.example.com --dimensions big
+network-audit sample-app --scenario sample-app/scenarios/browse.toml --dimensions big
+```
+
+`--dimensions` accepts **only shortcut names**, not custom sizes or tables, and
+**replaces** the scenario's `dimensions`. The scenario field must still be valid
+even when overridden. Explicit custom dimensions remain available in TOML.
+Omit both the field and the flag to keep the emulator defaults.
 
 To capture all HTTP(S) requests reaching the proxy, omit `domains` entirely:
 

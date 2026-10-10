@@ -12,7 +12,7 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from android import wait_for
+from android import DIMENSION_SHORTCUTS, wait_for
 from domains import normalize_domains
 
 RUNNER = Path(
@@ -41,12 +41,12 @@ def load_scenario(path):
         ) from error
     domains = normalize_domains(config["domains"]) if "domains" in config else None
     env_file = (path.parent / config["env-file"]).resolve() if "env-file" in config else None
+    dimensions = config.get("dimensions")
+    if isinstance(dimensions, str):
+        dimensions = DIMENSION_SHORTCUTS[dimensions]
     # JSON Schema accepts integral floats too; write canonical integers to the AVD.
-    dimensions = (
-        {key: int(value) for key, value in config["dimensions"].items()}
-        if "dimensions" in config
-        else None
-    )
+    if dimensions is not None:
+        dimensions = {key: int(value) for key, value in dimensions.items()}
     return (
         domains,
         validate_executor(path.parent / config["executor"]),

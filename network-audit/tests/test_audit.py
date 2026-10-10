@@ -27,7 +27,7 @@ from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from recording import ScreenRecording
 from report import generate_report, read_events
-from scenario import RUNNER, load_scenario, run_scenario, validate_executor
+from scenario import RUNNER, run_scenario, validate_executor
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -628,7 +628,12 @@ class AuditSessionTest(unittest.TestCase):
     def test_invalid_dimensions_fail_before_build_or_session_creation(self):
         valid = {"width": 1280, "height": 2856, "density": 480}
         cases = [
-            ('"1280x2856"', "dimensions: .*not of type 'object'"),
+            (json.dumps(value), "dimensions: .*not one of")
+            for value in ("small", "BIG", " big ", "", "1280x2856")
+        ] + [
+            ("480", "dimensions: .*not of type 'object'"),
+            ("true", "dimensions: .*not of type 'object'"),
+            ('["big"]', "dimensions: .*not of type 'object'"),
             ("{}", "dimensions: .*required property"),
             (
                 "{ width = 1280, height = 2856, density = 480, dpi = 480 }",
@@ -669,9 +674,26 @@ class AuditSessionTest(unittest.TestCase):
                     config.write_text(
                         f'executor = "executor.mjs"\ndimensions = {definition}\n'
                     )
-                    with self.assertRaisesRegex(ValueError, message):
-                        audit(args)
+                    for override in (None, "big"):
+                        args.dimensions = override
+                        with self.assertRaisesRegex(ValueError, message):
+                            audit(args)
                     self.assertFalse((root / "runs").exists())
+
+    def test_cli_dimensions_reject_non_shortcuts(self):
+        for value in (
+            "small", "BIG", " big ", "", "1280x2856",
+            "{ width = 1280, height = 2856, density = 480 }",
+        ):
+            with (
+                self.subTest(dimensions=value),
+                redirect_stderr(StringIO()) as errors,
+                self.assertRaises(SystemExit) as failure,
+            ):
+                parser().parse_args(["app.apk", "--dimensions", value])
+            self.assertEqual(failure.exception.code, 2)
+            self.assertIn("invalid choice", errors.getvalue())
+            self.assertIn("big", errors.getvalue())
 
 
 class ScreenRecordingTest(unittest.TestCase):
@@ -1269,40 +1291,65 @@ class EmulatorPreflightTest(unittest.TestCase):
                     self.assertEqual(emulator.serial, console)
                     self.assertEqual(emulator.device_id, Path(directory).name)
 
-    def test_scenario_dimensions_are_applied_before_emulator_boot(self):
-        for definition, expected_display, skin in (
-            ("", ("320", "640", "160"), None),
+    @unittest.skipUnless(shutil.which("mitmdump"), "mitmdump is supplied by devenv")
+    def test_dimensions_are_applied_before_emulator_boot(self):
+        for definition, shortcut, expected_display, skin in (
+            (None, None, ("320", "640", "160"), None),
+            (None, "big", ("1280", "2856", "480"), "1280x2856"),
+            ("", None, ("320", "640", "160"), None),
+            ("", "big", ("1280", "2856", "480"), "1280x2856"),
+            ('dimensions = "big"', None, ("1280", "2856", "480"), "1280x2856"),
             (
                 "dimensions = { width = 1280, height = 2856, density = 480 }",
+                None,
                 ("1280", "2856", "480"),
                 "1280x2856",
             ),
             (
                 "[dimensions]\nwidth = 1920\nheight = 1080\ndensity = 320",
+                None,
                 ("1920", "1080", "320"),
                 "1920x1080",
             ),
             (
+                "[dimensions]\nwidth = 1920\nheight = 1080\ndensity = 320",
+                "big",
+                ("1280", "2856", "480"),
+                "1280x2856",
+            ),
+            (
                 "dimensions = { width = 720.0, height = 1600.0, density = 240.0 }",
+                None,
                 ("720", "1600", "240"),
                 "720x1600",
             ),
         ):
             with (
-                self.subTest(dimensions=definition),
+                self.subTest(dimensions=definition, shortcut=shortcut),
                 tempfile.TemporaryDirectory(prefix="network-audit-") as directory,
             ):
                 root = Path(directory)
                 scenario = root / "scenario.toml"
-                scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
+                if definition is not None:
+                    scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
                 (root / "executor.mjs").write_text("export default async function () {}\n")
-                _, _, _, dimensions, _ = load_scenario(scenario)
-                device = Emulator(
-                    directory, None, 8080, True, "test-image", dimensions=dimensions
+                apk = root / "sample.apk"
+                apk.touch()
+                args = parser().parse_args(
+                    [
+                        str(apk), "--domain", "example.test",
+                        "--output", str(root / "runs"),
+                        *(["--scenario", str(scenario)] if definition is not None else []),
+                        *(["--dimensions", shortcut] if shortcut is not None else []),
+                    ]
                 )
+                popen = subprocess.Popen
 
                 def launch(command, **kwargs):
-                    config = root / "avd" / f"{device.name}.avd" / "config.ini"
+                    if command[0] != "emulator":
+                        return popen(command, **kwargs)
+                    avd = command[command.index("-avd") + 1]
+                    config = Path(kwargs["env"]["ANDROID_AVD_HOME"]) / f"{avd}.avd" / "config.ini"
                     entries = [
                         line.split("=", 1) for line in config.read_text().splitlines()
                     ]
@@ -1323,17 +1370,20 @@ class EmulatorPreflightTest(unittest.TestCase):
                         self.assertNotIn("-skin", command)
                     else:
                         self.assertEqual(command[command.index("-skin") + 1], skin)
-                    return Mock()
+                    # The real CLI and AVD writer ran; stop at the native boundary.
+                    raise RuntimeError("Display configuration verified before boot")
 
                 with (
+                    patch("cli.shutil.which", return_value="available"),
+                    patch("cli.check_emulator", return_value="test-image"),
+                    patch("cli.apk_identity", return_value=("test.app", "Main")),
                     patch("android.shutil.disk_usage", return_value=Mock(free=8 * 1024**3)),
                     patch("android.run", side_effect=create_avd),
                     patch("android.subprocess.Popen", side_effect=launch),
-                    patch("android.wait_for"),
-                    patch.object(device, "adb", return_value="OK"),
-                    patch.object(device, "shell"),
+                    redirect_stdout(StringIO()),
+                    self.assertRaisesRegex(RuntimeError, "Display configuration verified before boot"),
                 ):
-                    device.start()
+                    audit(args)
 
     def test_launch_accepts_first_draw_timeout_but_rejects_start_errors(self):
         emulator = Emulator("/unused", None, 8080, True, "test-image")

@@ -21,14 +21,18 @@
       "pattern": "\\S"
     },
     "dimensions": {
-      "description": "Emulator display width and height in pixels and density in dpi. Omit to keep the emulator defaults.",
-      "type": "object",
-      "required": ["width", "height", "density"],
-      "additionalProperties": false,
-      "properties": {
-        "width": { "type": "integer", "minimum": 2, "multipleOf": 2 },
-        "height": { "type": "integer", "minimum": 1 },
-        "density": { "type": "integer", "minimum": 1 }
+      "description": "Emulator display shortcut (big: 1280x2856 at 480 dpi) or explicit width and height in pixels and density in dpi. CLI --dimensions replaces this default. Omit both to keep the emulator defaults.",
+      "if": { "type": "string" },
+      "then": { "enum": ["big"] },
+      "else": {
+        "type": "object",
+        "required": ["width", "height", "density"],
+        "additionalProperties": false,
+        "properties": {
+          "width": { "type": "integer", "minimum": 2, "multipleOf": 2 },
+          "height": { "type": "integer", "minimum": 1 },
+          "density": { "type": "integer", "minimum": 1 }
+        }
       }
     },
     "domains": {

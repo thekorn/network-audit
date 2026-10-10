@@ -15,7 +15,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from android import Emulator, apk_identity, check_emulator, wait_for
+from android import DIMENSION_SHORTCUTS, Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
 from recording import ScreenRecording
 from report import generate_report
@@ -63,6 +63,11 @@ def parser():
         # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
         default=sys.platform == "linux" and not os.environ.get("DISPLAY"),
         help="Hide the emulator window (automatic on Linux without DISPLAY)",
+    )
+    result.add_argument(
+        "--dimensions",
+        choices=DIMENSION_SHORTCUTS,
+        help="Emulator display shortcut; overrides scenario dimensions",
     )
     result.add_argument(
         "--record",
@@ -130,6 +135,8 @@ def audit(args):
         env_file = None
         dimensions = None
         flavor = None
+    if args.dimensions is not None:
+        dimensions = DIMENSION_SHORTCUTS[args.dimensions].copy()
     if args.flavor is not None:
         flavor = args.flavor
     if flavor is not None:

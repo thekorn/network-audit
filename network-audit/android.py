@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 
 
+DIMENSION_SHORTCUTS = {
+    "big": {"width": 1280, "height": 2856, "density": 480},
+}
+
 # The pinned emulator raises smaller userdata requests to 6 GiB.
 DATA_PARTITION_GIB = 6
 # Allow room for writable emulator images in addition to userdata. Builds and

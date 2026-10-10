@@ -43,7 +43,14 @@ in
       pkgs.jdk17
       android.androidsdk
       android.platform-tools
+      pkgs.python3
+      pkgs.mitmproxy
+      pkgs.openssl
     ];
+
+    scripts.network-audit.exec = ''
+      exec ${pkgs.python3}/bin/python3 ${lib.escapeShellArg "${config.devenv.root}/network-audit/cli.py"} "$@"
+    '';
 
     env = {
       DEVENV_TOOLBOX = "network-audit";
@@ -65,6 +72,9 @@ in
       dart --version
       java -version
       adb version
+      mitmdump --version
+      network-audit --help
+      python3 -m unittest discover -s network-audit/tests -v
       test -f "$ANDROID_HOME/platforms/android-36/android.jar"
       test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
       test -f "$ANDROID_NDK_ROOT/source.properties"

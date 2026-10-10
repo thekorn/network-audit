@@ -13,3 +13,8 @@ devenv.local.yaml
 build/
 local.properties
 *.iml
+
+# Private audit data, generated reports and Python bytecode.
+.network-audit/
+.amp/in/
+__pycache__/

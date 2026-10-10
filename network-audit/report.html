@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>@@TITLE@@ · Network audit</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f6f8;
+        --surface: #fff;
+        --text: #17212b;
+        --muted: #627080;
+        --border: #dfe4ea;
+        --accent: #216655;
+        --soft: #e5f1ec;
+        --bad: #a53530;
+        --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          15px/1.55 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1240px;
+        margin: auto;
+        padding: 44px 32px 100px;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 26px;
+      }
+      .eyebrow {
+        font: 600 12px var(--mono);
+        letter-spacing: 2px;
+        color: var(--accent);
+        text-transform: uppercase;
+      }
+      .title {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 38px;
+        letter-spacing: -1.5px;
+        margin: 12px 0;
+      }
+      h2 {
+        font-size: 20px;
+        letter-spacing: -0.4px;
+        margin: 0 0 16px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 18px 0 8px;
+      }
+      .muted,
+      small {
+        color: var(--muted);
+      }
+      .pill {
+        border: 1px solid #c1d9ce;
+        border-radius: 20px;
+        background: var(--soft);
+        color: var(--accent);
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .mono {
+        font-family: var(--mono);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin: 26px 0;
+      }
+      .stat,
+      .panel {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .stat strong {
+        display: block;
+        font-size: 29px;
+        letter-spacing: -1px;
+      }
+      .stat span {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .context {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 30px;
+      }
+      .context p {
+        margin: 5px 0;
+        font-size: 13px;
+      }
+      .bars {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .bars li {
+        display: grid;
+        grid-template-columns: minmax(110px, 1fr) 1fr 35px;
+        align-items: center;
+        gap: 16px;
+        margin: 10px 0;
+        font: 12px var(--mono);
+      }
+      .bars span {
+        overflow-wrap: anywhere;
+      }
+      meter {
+        width: 100%;
+        height: 12px;
+      }
+      meter::-webkit-meter-bar {
+        background: #edf0f2;
+        border: 0;
+      }
+      meter::-webkit-meter-optimum-value {
+        background: var(--accent);
+      }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      input,
+      select,
+      button {
+        font: inherit;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface);
+        padding: 10px 12px;
+        color: var(--text);
+      }
+      input {
+        flex: 1;
+        min-width: 180px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      :focus-visible {
+        outline: 3px solid #7fbca9;
+        outline-offset: 2px;
+      }
+      .exchange {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 9px;
+        margin: 8px 0;
+        overflow: hidden;
+      }
+      .exchange > summary {
+        cursor: pointer;
+        display: grid;
+        grid-template-columns: 28px 62px minmax(0, 1fr) 60px 80px;
+        gap: 12px;
+        align-items: center;
+        padding: 16px;
+        font: 12px var(--mono);
+        list-style: none;
+      }
+      .exchange > summary:before {
+        content: "+";
+        color: var(--muted);
+      }
+      .exchange[open] > summary:before {
+        content: "−";
+      }
+      .url {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .status {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .error {
+        color: var(--bad);
+      }
+      .duration {
+        text-align: right;
+        color: var(--muted);
+      }
+      .detail {
+        border-top: 1px solid var(--border);
+        padding: 20px;
+      }
+      .full-url {
+        overflow-wrap: anywhere;
+        margin: 0 0 12px;
+      }
+      .messages {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 20px;
+      }
+      .message {
+        min-width: 0;
+      }
+      pre {
+        background: #f4f6f8;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 14px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 460px;
+        overflow: auto;
+        font: 12px/1.65 var(--mono);
+        margin: 0;
+      }
+      details details summary {
+        cursor: pointer;
+        font-size: 13px;
+        padding: 8px 0;
+      }
+      .notice {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      #diagnostics[data-empty="true"] {
+        display: none;
+      }
+      #diagnostics {
+        border-left: 3px solid var(--bad);
+        padding: 0 16px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .empty {
+        padding: 40px;
+        text-align: center;
+        border: 1px dashed var(--border);
+        border-radius: 9px;
+        color: var(--muted);
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 28px;
+        padding-top: 16px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      @media (max-width: 700px) {
+        main {
+          padding: 24px 16px 70px;
+        }
+        h1 {
+          font-size: 30px;
+        }
+        .stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .context,
+        .messages {
+          grid-template-columns: 1fr;
+        }
+        .exchange > summary {
+          grid-template-columns: 16px 44px minmax(0, 1fr) 40px;
+          gap: 8px;
+          padding: 14px 10px;
+        }
+        .duration {
+          display: none;
+        }
+        .stat,
+        .panel {
+          padding: 16px;
+        }
+        .toolbar input {
+          width: 100%;
+        }
+        .bars li {
+          gap: 8px;
+        }
+        .meta {
+          flex-direction: column;
+          gap: 4px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header id="overview">
+        <div class="eyebrow">Network audit / Android capture</div>
+        <div class="title">
+          <h1>@@TITLE@@</h1>
+          <span class="pill">@@STATE@@</span>
+        </div>
+        <div class="meta">
+          <span class="mono muted">@@PACKAGE@@</span
+          ><span class="mono muted">@@STARTED@@</span>
+        </div>
+      </header>
+      <section class="stats" aria-label="Capture totals" id="totals">
+        <div class="stat">
+          <strong>@@COUNT@@</strong><span>HTTP exchanges</span>
+        </div>
+        <div class="stat">
+          <strong>@@HOSTS@@</strong><span>Matched hosts</span>
+        </div>
+        <div class="stat">
+          <strong>@@BYTES@@</strong><span>Response body bytes, on wire</span>
+        </div>
+        <div class="stat">
+          <strong>@@ERRORS@@</strong><span>HTTP errors / incomplete</span>
+        </div>
+      </section>
+      <div class="context">
+        <section class="panel" id="hosts">
+          <h2>Requests by host</h2>
+          <ul class="bars">
+            @@BARS@@
+          </ul>
+        </section>
+        <section class="panel" id="scope">
+          <h2>Capture scope</h2>
+          <p class="mono">@@DOMAINS@@</p>
+          <p class="muted">
+            Selected-domain HTTP(S) traffic from a dedicated emulator, including
+            native clients and WebView. Other domains are not recorded.
+          </p>
+          <p class="notice">
+            Not per-process attribution. No certificate-pinning bypass or
+            WebSocket frame capture. QUIC is blocked to encourage TCP fallback.
+          </p>
+        </section>
+      </div>
+      <section
+        id="diagnostics"
+        aria-label="Capture diagnostics"
+        data-empty="@@EMPTYDIAGNOSTICS@@"
+      >
+        @@DIAGNOSTICS@@
+      </section>
+      <section id="requests">
+        <h2>Request &amp; response explorer</h2>
+        <div class="toolbar">
+          <input
+            id="search"
+            type="search"
+            aria-label="Search requests"
+            placeholder="Search requests…"
+          /><select id="host" aria-label="Filter host">
+            <option value="">All hosts</option></select
+          ><select id="status" aria-label="Filter result">
+            <option value="">All results</option>
+            <option value="errors">Errors / incomplete</option>
+            <option value="success">HTTP 2xx / 3xx</option></select
+          ><button id="reset" type="button">Reset</button>
+        </div>
+        <p class="notice" id="shown" aria-live="polite"></p>
+        <div id="exchanges"></div>
+        <p id="empty" class="empty" hidden>
+          No matching exchanges. Check the filters or capture diagnostics.
+        </p>
+      </section>
+      <footer id="privacy">
+        Private capture · Headers, cookies, tokens and bodies are not redacted.
+        Body previews may be truncated; complete captured exchanges are in
+        flows.mitm. Binary previews are base64. This report loads no external
+        resources.
+      </footer>
+    </main>
+    <script type="application/json" id="audit-data">
+      @@DATA@@
+    </script>
+    <script>
+      "use strict";
+      const { flows } = JSON.parse(
+        document.getElementById("audit-data").textContent,
+      );
+      const el = (tag, text, cls) => {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (cls) node.className = cls;
+        return node;
+      };
+      const host = document.getElementById("host"),
+        status = document.getElementById("status"),
+        search = document.getElementById("search");
+      [...new Set(flows.map((f) => f.host))].sort().forEach((name) => {
+        const option = el("option", name);
+        option.value = name;
+        host.append(option);
+      });
+      function pretty(body) {
+        try {
+          return JSON.stringify(JSON.parse(body), null, 2);
+        } catch {
+          return body;
+        }
+      }
+      function message(title, value) {
+        const section = el("section", undefined, "message");
+        section.append(el("h3", title));
+        if (!value) {
+          section.append(el("p", "No response captured.", "error"));
+          return section;
+        }
+        section.append(
+          el(
+            "p",
+            `${value.http_version} · ${value.bytes ?? "unknown"} body bytes`,
+            "notice",
+          ),
+        );
+        const headers = el("details");
+        headers.open = true;
+        headers.append(
+          el("summary", `Headers (${value.headers.length})`),
+          el(
+            "pre",
+            value.headers.map(([k, v]) => `${k}: ${v}`).join("\n") || "(none)",
+          ),
+        );
+        section.append(headers);
+        if (value.trailers.length) {
+          section.append(
+            el("h3", "Trailers"),
+            el("pre", value.trailers.map(([k, v]) => `${k}: ${v}`).join("\n")),
+          );
+        }
+        section.append(
+          el(
+            "h3",
+            value.body_text !== null
+              ? "Body · decoded text"
+              : "Body · base64 wire bytes",
+          ),
+        );
+        section.append(
+          el(
+            "pre",
+            value.missing
+              ? "(body unavailable)"
+              : value.body_text !== null
+                ? pretty(value.body_text) || "(empty)"
+                : value.body_base64 || "(empty)",
+          ),
+        );
+        if (value.truncated)
+          section.append(
+            el(
+              "p",
+              "Preview truncated. Full captured body is in flows.mitm.",
+              "error notice",
+            ),
+          );
+        return section;
+      }
+      function render() {
+        const query = search.value.toLowerCase();
+        const selected = flows.filter((f) => {
+          const failed = !!f.error || !f.response || f.response.status >= 400;
+          return (
+            (!host.value || host.value === f.host) &&
+            (!status.value || (status.value === "errors" ? failed : !failed)) &&
+            (!query || JSON.stringify(f).toLowerCase().includes(query))
+          );
+        });
+        const container = document.getElementById("exchanges");
+        container.replaceChildren();
+        selected.forEach((f) => {
+          const row = el("details", undefined, "exchange");
+          row.id = `flow-${f.id}`;
+          const summary = el("summary");
+          const code = f.response ? String(f.response.status) : "ERR";
+          summary.append(
+            el("span", f.method),
+            el("span", f.url, "url"),
+            el(
+              "span",
+              code,
+              Number(code) >= 400 || f.error || !f.response
+                ? "status error"
+                : "status",
+            ),
+            el(
+              "span",
+              f.duration_ms === null ? "—" : `${f.duration_ms.toFixed(0)} ms`,
+              "duration",
+            ),
+          );
+          row.append(summary);
+          row.addEventListener("toggle", () => {
+            if (!row.open || row.childElementCount > 1) return;
+            const detail = el("div", undefined, "detail");
+            detail.append(el("p", f.url, "mono full-url"));
+            if (f.error) detail.append(el("p", f.error, "error"));
+            const messages = el("div", undefined, "messages");
+            messages.append(
+              message("Request", f.request),
+              message("Response", f.response),
+            );
+            detail.append(messages);
+            row.append(detail);
+          });
+          container.append(row);
+        });
+        document.getElementById("shown").textContent =
+          `${selected.length} of ${flows.length} exchanges · Select a row to inspect headers and body`;
+        document.getElementById("empty").hidden = selected.length !== 0;
+      }
+      search.addEventListener("input", render);
+      host.addEventListener("change", render);
+      status.addEventListener("change", render);
+      document.getElementById("reset").addEventListener("click", () => {
+        search.value = host.value = status.value = "";
+        render();
+      });
+      render();
+    </script>
+  </body>
+</html>

@@ -1,8 +1,39 @@
 # network-audit
 
-Flutter/Android development with Nix and [devenv](https://devenv.sh).
+Capture Android HTTP(S) traffic with mitmproxy and generate an offline HTML report.
+Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
 sends ten GET requests per batch and an Android WebView loading BUNTE.
+
+## Audit the sample
+
+On a **KVM-capable x86_64 Linux host**, enable the declared emulator in the ignored
+`devenv.local.nix` (not in an Amp orb):
+
+```nix
+{ androidEmulator.enable = true; }
+```
+
+Then run from the repository root:
+
+```bash
+devenv shell
+network-audit sample-app
+```
+
+The command builds the debug APK, creates and boots a disposable Android 36 AVD,
+installs a session-only system CA (including Android's Conscrypt trust store),
+and launches the app. No manual AVD or certificate setup is needed. Requests and
+responses matching `*.bunte.de` and `dummyjson.com` print as they happen. Visit
+both app tabs, then close/leave the app for five seconds or press Ctrl+C.
+The emulator and proxy stop and the command prints the HTML report path.
+
+Reports contain searchable exchanges, request/response headers and body previews,
+host counts, durations, HTTP errors, incomplete requests and TLS diagnostics.
+All data stays in the private, ignored `.network-audit/runs/<session>/` directory.
+**Cookies, tokens and bodies are not redacted. Review before sharing.**
+
+See [tool usage, configuration, limits and tests](network-audit/README.md).
 
 ## Toolchain
 

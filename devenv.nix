@@ -70,29 +70,58 @@ in
       FLUTTER_SUPPRESS_ANALYTICS = "true";
     };
 
-    enterTest = ''
-      set -euo pipefail
-      flutter --version
-      dart --version
-      java -version
-      adb version
-      mitmdump --version
-      network-audit --help
-      pyright
-      python3 -m unittest discover -s network-audit/tests -v
-      (
-        cd sample-app
-        flutter analyze
-        flutter test
-      )
-      test -f "$ANDROID_HOME/platforms/android-36/android.jar"
-      test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
-      test -f "$ANDROID_NDK_ROOT/source.properties"
-      test -d "$ANDROID_HOME/cmake/3.22.1"
-      ${lib.optionalString config.androidEmulator.enable ''
-        test -x "$ANDROID_HOME/emulator/emulator"
-        test -f "$ANDROID_HOME/system-images/android-36/google_apis/${emulatorAbi}/package.xml"
-      ''}
-    '';
+    # Named tasks expose each result in devenv's test output. Keep successful
+    # analysis/test logs visible too, including diagnostics and test totals.
+    tasks = lib.mapAttrs (_: task: {
+      before = [ "devenv:enterTest" ];
+      cwd = config.devenv.root;
+    } // task) {
+      "test:toolchain".exec = ''
+        set -euo pipefail
+        flutter --version
+        dart --version
+        java -version
+        adb version
+        mitmdump --version
+        network-audit --help
+      '';
+
+      "test:android-sdk".exec = ''
+        set -euo pipefail
+        test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+        test -x "$ANDROID_HOME/build-tools/${buildToolsVersion}/aapt2"
+        test -f "$ANDROID_NDK_ROOT/source.properties"
+        test -d "$ANDROID_HOME/cmake/3.22.1"
+        ${lib.optionalString config.androidEmulator.enable ''
+          test -x "$ANDROID_HOME/emulator/emulator"
+          test -f "$ANDROID_HOME/system-images/android-36/google_apis/${emulatorAbi}/package.xml"
+        ''}
+      '';
+
+      "test:pyright" = {
+        exec = "pyright";
+        showOutput = true;
+      };
+
+      "test:python" = {
+        exec = "python3 -m unittest discover -s network-audit/tests -v";
+        showOutput = true;
+      };
+
+      "test:flutter-analyze" = {
+        exec = "flutter analyze";
+        cwd = "${config.devenv.root}/sample-app";
+        showOutput = true;
+        after = [ "test:toolchain@completed" ];
+      };
+
+      "test:flutter-tests" = {
+        exec = "flutter test --reporter expanded";
+        cwd = "${config.devenv.root}/sample-app";
+        showOutput = true;
+        # Serialize Flutter commands, but don't skip tests if analysis fails.
+        after = [ "test:flutter-analyze@completed" ];
+      };
+    };
   };
 }

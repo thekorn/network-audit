@@ -77,6 +77,12 @@ flutter --version
 devenv test
 ```
 
+`devenv test` shows a named result for toolchain and Android SDK checks, Pyright,
+Python tests, Flutter analysis, and Flutter tests. Successful analysis output and
+test totals are shown without `--verbose`; failed checks include their diagnostics.
+All checks run even if another check fails, and any failure makes the command exit
+nonzero. Flutter commands run sequentially to avoid startup-lock contention.
+
 Use `devenv shell <command>` for noninteractive commands. Flutter and its bundled
 Dart come from the same Nix package; do not run `flutter upgrade`, `sdkmanager
 --install`, or try to write into `/nix/store`. Change the declared versions and

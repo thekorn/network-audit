@@ -447,6 +447,16 @@
         </section>
         <section class="panel" id="scope">
           <h2>Capture scope</h2>
+          {% if metadata.get('backend') == 'ios' %}
+          <p class="mono">Experimental iOS Simulator</p>
+          <p class="mono">{{ metadata.domains|join(' · ') if metadata.domains is not none else 'All HTTP(S) requests reaching capture' }}</p>
+          <p class="muted">{{ metadata.capture_scope }}.</p>
+          <p class="notice">
+            Native capture is not yet verified. Missing WebKit or system-helper
+            traffic is not evidence of no requests. No certificate-pinning bypass
+            or WebSocket frame capture. Unlike Android, QUIC is not blocked.
+          </p>
+          {% else %}
           {% if metadata.domains is none %}
           <p class="mono">All HTTP(S) requests</p>
           <p class="muted">
@@ -464,6 +474,7 @@
             Not per-process attribution. No certificate-pinning bypass or
             WebSocket frame capture. QUIC is blocked to encourage TCP fallback.
           </p>
+          {% endif %}
         </section>
       </div>
       <section

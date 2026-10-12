@@ -4,6 +4,140 @@ A Python CLI with a mitmproxy addon and Jinja2 report templates. The pinned
 Nix flake or devenv supplies Python, Jinja2, mitmproxy and OpenSSL; no pip install,
 Flutter app modification, proxy override or `badCertificateCallback` is needed.
 
+`--backend=android` is the default; existing commands keep using Android.
+`--backend=ios` selects the experimental macOS-only backend described below.
+The Android workflow in the remaining sections is unchanged except where noted.
+
+## Experimental iOS Simulator backend
+
+**Implemented but not natively verified.** Neither an Amp orb nor the Linux
+`thekorn-amp-runner` can build or run iOS Simulator. The automated Linux tests
+exercise CLI selection, platform validation, build arguments, lifecycle,
+recording signals, report preservation and scenario routing through substituted
+Xcode/device boundaries. They do not prove iOS traffic interception works.
+
+On an Apple Silicon Mac, install full Xcode, accept its license, complete its
+first-launch setup and install an iOS Simulator runtime in Xcode Settings.
+Select that Xcode with `xcode-select` or `DEVELOPER_DIR`. Command Line Tools alone
+are insufficient. Flutter projects also need a Mac Flutter SDK and any native
+plugin build tools their project uses (for example CocoaPods). See
+[Flutter's iOS setup](https://docs.flutter.dev/platform-integration/ios/setup).
+Xcode and Apple's runtime cannot be bundled by Nix.
+
+Use the **core** package with your Mac's existing Flutter/Xcode environment to
+avoid downloading the Android emulator and image:
+
+```sh
+nix run .#network-audit-core -- /path/to/flutter-project --backend=ios --domain api.example.com
+nix run .#network-audit-core -- /path/to/MyApp.app --backend=ios --domain api.example.com
+# With devenv, neither command enables the Android emulator:
+devenv shell network-audit sample-app --backend=ios --domain dummyjson.com
+devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/products-ios.toml
+```
+
+The full package also accepts `--backend=ios`, but still downloads its bundled
+Android toolchain. The pinned Flutter wrapper supplies iOS engine artifacts on
+Darwin. No lockfile or SDK download is performed by iOS preflight.
+
+Input is a Flutter project with its `ios` platform and committed `pubspec.lock`,
+or an unpacked **Simulator** `.app` bundle. Device `.app` builds, IPA files and
+APKs are rejected. A prebuilt app must support the host's Simulator architecture.
+The CLI reads `CFBundleIdentifier` and `CFBundleSupportedPlatforms` from
+`Info.plist`; `simctl install` validates compatibility with the selected runtime.
+Flutter builds use `flutter build ios --simulator --debug --no-codesign --no-pub`
+after locked `pub get`. `--use-fvm`, `--flavor` (an existing Xcode scheme), Dart
+define files and scenario defaults work as on Android. The built bundle is
+selected from Flutter's reported output, not an assumed `Runner.app` filename.
+Build output is printed after the iOS build finishes. Flavors/defines cannot
+change a prebuilt `.app`.
+
+By default, preflight selects the newest available iOS runtime with a supported
+iPhone, and the first iPhone device type listed by that runtime. To pin both:
+
+```sh
+xcrun simctl list runtimes --json
+network-audit MyApp.app --backend=ios --domain api.example.com \
+  --ios-runtime com.apple.CoreSimulator.SimRuntime.iOS-18-5 \
+  --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPhone-16
+```
+
+Those identifiers are examples; select identifiers present on your Mac.
+`--dimensions` and scenario `dimensions` are rejected for iOS: Simulator sizes
+belong to device types, not arbitrary width/height/density settings.
+
+### Capture scope and host permissions
+
+Each run creates a new device via `simctl create`, starts mitmproxy, boots that
+device, adds a session-only root CA with `simctl keychain <UDID> add-root-cert`,
+installs the app and launches it. Only the created UDID is shut down and deleted.
+Existing Simulators, host proxy preferences and host CA trust are not changed.
+On SIGKILL or host failure, cleanup is not possible; use the UDID in `session.json`
+to remove that one orphaned Simulator manually, never `simctl delete all`.
+
+iOS Simulator does not have Android's per-emulator TCP proxy. Instead, this
+backend uses [mitmproxy local capture](https://docs.mitmproxy.org/stable/concepts/modes/#local-capture)
+with `local:<owned-UDID>/`. In the pinned macOS redirector, selectors match
+substrings of full executable paths. This scopes interception to binaries inside
+the new Simulator and can catch direct sockets, including Dart clients that
+ignore HTTP proxy settings. It never falls back to unrestricted host capture.
+
+**On first use, mitmproxy installs its signed Mitmproxy Redirector app in
+`/Applications` and macOS asks you to approve its network/system extension.**
+Writing `/Applications` and approving the extension may need an administrator.
+The helper remains installed after the audit; stopping the proxy stops this
+capture, not the shared helper installation. Complete first-run approval in an
+interactive Mac session before using a headless runner. Allow up to two minutes
+for proxy readiness. Run only one local-capture audit/tool at a time because the
+redirector is shared. The pinned Nix mitmproxy includes the official signed
+macOS helper; no new dependency was added for this backend.
+
+**This is not yet capture parity with Android.** Shared WebKit networking
+processes, system services and background URLSession helpers can run from the
+shared runtime rather than the device directory and are outside this selector.
+In particular, the sample's BUNTE WebView is not an iOS capture acceptance test.
+No broad `WebKit` selector is used because that could intercept unrelated host
+or Simulator traffic. Certificate pinning/custom trust remain unsupported.
+There is no iOS UDP/443 firewall rule: QUIC is not forced to fall back to TCP.
+The report explicitly displays these scope limits; a zero-exchange report is
+never evidence that the app made no requests.
+
+### Finishing, scenarios and recording
+
+Finish a manual iOS session with **Ctrl+C**. Home/backgrounding does not finish
+capture: `simctl` does not provide the Android foreground-activity API used by
+`--close-grace`, which is ignored on iOS. Simulator shutdown also ends capture.
+`--headless` skips opening the Simulator UI but still boots the device.
+
+`--scenario` attaches Mobilewright's iOS driver to the owned UDID without
+relaunching the app. The same executor context is available, with `backend`
+equal to `ios`, `serial`/`device.id` equal to the UDID, and `packageName` equal to
+the bundle identifier. Mobilecli installs its Simulator DeviceKit helper as
+needed; no real-device provisioning profile is required. iOS selectors and
+Flutter/WebView accessibility still need native validation; Android-only
+executors and their `dimensions` settings are not automatically converted.
+
+`--record` uses `simctl io <UDID> recordVideo --codec=h264`. SIGINT finalizes the
+silent MP4 before shutdown. Only a successful recorder exit and nonempty output
+produce `recording.mp4`; failures retain `recording.partial.mp4` when available
+and still generate the network report. Native recording is also unverified.
+
+### Pending Mac acceptance
+
+The sample now includes a generated iOS platform and a product-only scenario:
+
+```sh
+devenv shell audit sample-app --backend=ios \
+  --scenario sample-app/scenarios/products-ios.toml --record
+```
+
+The scenario requires all ten successful product HTTPS responses **in the
+capture**, not only a successful UI. On the future Mac runner, verify this run,
+play the MP4, then repeat manually and end with Ctrl+C. Also test prebuilt
+Simulator `.app` input, a scenario failure/timeout, denied redirector approval,
+CA trust failures and simulator boot failure. Check the report and confirm the
+owned device/proxy are removed while an unrelated booted Simulator stays intact.
+Investigate WKWebView/helper attribution separately before widening capture.
+
 ## Run
 
 Install or run the self-contained flake on a supported host as described in

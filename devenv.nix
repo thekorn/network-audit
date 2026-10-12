@@ -43,6 +43,19 @@ in
     # Keep the audit in the foreground: oneshot tasks have a five-second
     # shutdown deadline that can interrupt cleanup and report generation.
     scripts.audit.exec = ''
+      backend=android
+      previous=
+      for argument in "$@"; do
+        if [[ "$previous" == --backend ]]; then
+          backend="$argument"
+        elif [[ "$argument" == --backend=* ]]; then
+          backend="''${argument#--backend=}"
+        fi
+        previous="$argument"
+      done
+      if [[ "$backend" == ios ]]; then
+        exec devenv shell -- network-audit "$@"
+      fi
       exec devenv shell -O androidEmulator.enable:bool true -- network-audit "$@"
     '';
 

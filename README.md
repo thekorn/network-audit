@@ -1,9 +1,27 @@
 # network-audit
 
-Capture Android HTTP(S) traffic with mitmproxy and generate an offline HTML report.
+Capture Android or iOS Simulator HTTP(S) traffic with mitmproxy and generate an offline HTML report.
 Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
 sends ten GET requests per batch and an Android WebView loading BUNTE.
+
+Android remains the default (`--backend=android`). **Experimental iOS support**
+uses `--backend=ios` on a Mac with full Xcode and an installed iOS runtime:
+
+```bash
+network-audit /path/to/flutter-project --backend=ios --domain api.example.com
+network-audit /path/to/SimulatorBuild.app --backend=ios --domain api.example.com
+# In this checkout, without enabling the Android emulator:
+devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/products-ios.toml
+```
+
+iOS uses mitmproxy's macOS local-capture extension rather than changing the
+Mac's HTTP proxy settings. It requires user approval on first use. Capture is
+scoped to executable paths inside the disposable Simulator; shared WebKit and
+system networking helpers are **not included**. Native iOS builds, capture,
+recording and scenarios have **not been verified on a Mac** yet; Linux tests use
+substituted platform boundaries. See [iOS prerequisites, limits and pending
+acceptance checks](network-audit/README.md#experimental-ios-simulator-backend).
 
 Start with [What does your Android app actually send?](docs/network-audit.md),
 a Nix-first walkthrough using the sample app, screenshots, and a short recording.

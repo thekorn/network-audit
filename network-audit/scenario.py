@@ -96,7 +96,9 @@ def stop_group(process, grace=5):
         process.wait()
 
 
-def run_scenario(path, *, serial, device_id, package, session, timeout, check_running):
+def run_scenario(
+    path, *, serial, device_id, package, session, timeout, check_running, backend="android"
+):
     deadline = time.monotonic() + timeout
     binary = subprocess.run(
         ["node", str(RUNNER), "--check"],
@@ -145,6 +147,7 @@ def run_scenario(path, *, serial, device_id, package, session, timeout, check_ru
                     device_id,
                     package,
                     str(session),
+                    backend,
                 ],
                 env=env,
                 stdout=log,

@@ -31,6 +31,9 @@ in
     # iOS needs the host's full Xcode, not Nix's macOS-only SDK. Let Apple's
     # tools use xcode-select (or the caller's DEVELOPER_DIR) for SDK discovery.
     apple.sdk = null;
+    # Xcode selects its own compiler driver for linking. Nix's LD=ld overrides
+    # that selection and sends compiler flags directly to the linker.
+    stdenv = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin pkgs.stdenvNoCC;
 
     packages = toolchain.packages ++ [
       python

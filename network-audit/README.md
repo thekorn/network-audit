@@ -39,12 +39,20 @@ The full package also accepts `--backend=ios`, but still downloads its bundled
 Android toolchain. The pinned Flutter wrapper supplies iOS engine artifacts on
 Darwin. No lockfile or SDK download is performed by iOS preflight.
 
-The devenv shell disables Nix's macOS-only Apple SDK (`apple.sdk = null`) so
-`xcrun` and `xcodebuild` use your host Xcode selection. If an already-open shell
-reports `unable to find sdk: 'iphonesimulator'`, exit it and re-enter devenv from
-a normal terminal: an old shell can retain Nix's `DEVELOPER_DIR` and `SDKROOT`.
+The devenv shell disables Nix's macOS-only Apple SDK (`apple.sdk = null`) and
+uses a compiler-free shell on macOS so Xcode selects its own compiler and
+linker. If an already-open shell reports `unable to find sdk: 'iphonesimulator'`
+or a linker error about `-objc_abi_version`, exit it and re-enter devenv from
+a normal terminal: an old shell can retain Nix's `DEVELOPER_DIR`, `SDKROOT`
+and `LD`.
 Verify with `xcrun --sdk iphonesimulator --show-sdk-path`; it should resolve
 inside your selected Xcode installation, not `/nix/store`.
+
+The pinned Flutter SDK also backports an upstream permission fix for frameworks
+copied from the immutable Nix store. If a previous failed build left a read-only
+`Flutter.framework` and Flutter cannot remove it, make only that generated
+output writable before retrying: `chmod -R u+w build/ios/Debug-iphonesimulator/Flutter.framework`
+from the app directory. Never change permissions inside `/nix/store`.
 
 Input is a Flutter project with its `ios` platform and committed `pubspec.lock`,
 or an unpacked **Simulator** `.app` bundle. Device `.app` builds, IPA files and

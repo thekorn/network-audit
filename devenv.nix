@@ -28,6 +28,10 @@ in
     devenv.latestVersion =
       (builtins.fromTOML (builtins.readFile "${inputs.devenv}/Cargo.toml")).workspace.package.version;
 
+    # iOS needs the host's full Xcode, not Nix's macOS-only SDK. Let Apple's
+    # tools use xcode-select (or the caller's DEVELOPER_DIR) for SDK discovery.
+    apple.sdk = null;
+
     packages = toolchain.packages ++ [
       python
       pkgs.mitmproxy

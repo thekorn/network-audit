@@ -28,10 +28,11 @@ def check_simulator(runtime=None, device_type=None):
     run(["xcrun", "--find", "simctl"])
     run(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"])
     developer = Path(os.environ.get("DEVELOPER_DIR") or run(["xcode-select", "-p"]))
-    applications = developer / "Applications"
+    # Xcode 27 moved DeviceHub to Contents/Applications, outside Developer.
     simulator_app = next(
         (
             applications / name
+            for applications in (developer / "Applications", developer.parent / "Applications")
             for name in ("Simulator.app", "DeviceHub.app")
             if (applications / name).is_dir()
         ),

@@ -39,6 +39,13 @@ The full package also accepts `--backend=ios`, but still downloads its bundled
 Android toolchain. The pinned Flutter wrapper supplies iOS engine artifacts on
 Darwin. No lockfile or SDK download is performed by iOS preflight.
 
+The devenv shell disables Nix's macOS-only Apple SDK (`apple.sdk = null`) so
+`xcrun` and `xcodebuild` use your host Xcode selection. If an already-open shell
+reports `unable to find sdk: 'iphonesimulator'`, exit it and re-enter devenv from
+a normal terminal: an old shell can retain Nix's `DEVELOPER_DIR` and `SDKROOT`.
+Verify with `xcrun --sdk iphonesimulator --show-sdk-path`; it should resolve
+inside your selected Xcode installation, not `/nix/store`.
+
 Input is a Flutter project with its `ios` platform and committed `pubspec.lock`,
 or an unpacked **Simulator** `.app` bundle. Device `.app` builds, IPA files and
 APKs are rejected. A prebuilt app must support the host's Simulator architecture.

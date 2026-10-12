@@ -199,7 +199,10 @@ class AuditSessionTest(unittest.TestCase):
                     self.assertEqual(
                         (session / "recording.mp4").read_bytes(), b"finalized video fixture"
                     )
-                    self.assertIn(f"Video: {session / 'recording.mp4'}", output.getvalue())
+                    self.assertIn(
+                        f"Video: {(session / 'recording.mp4').resolve()}",
+                        output.getvalue().splitlines(),
+                    )
                 else:
                     self.assertNotIn("recording", metadata)
                     self.assertFalse((session / "recording.mp4").exists())
@@ -945,6 +948,31 @@ class IOSBackendTest(unittest.TestCase):
                 for runtime, device_type in ((prefix + "iOS-99-0", None), (None, "missing"), (prefix + "iOS-9-0", "tablet")):
                     with self.assertRaisesRegex(RuntimeError, "No available iOS"):
                         check_simulator(runtime, device_type)
+
+    def test_simulator_application_supports_xcode_layouts(self):
+        for relative in (
+            "Developer/Applications/Simulator.app",
+            "Developer/Applications/DeviceHub.app",
+            "Applications/DeviceHub.app",
+        ):
+            with self.subTest(application=relative), tempfile.TemporaryDirectory() as directory:
+                contents = Path(directory) / "Xcode Beta.app/Contents"
+                developer = contents / "Developer"
+                developer.mkdir(parents=True)
+                application = contents / relative
+                application.mkdir(parents=True)
+                runtime = {
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    "version": "27.0",
+                    "isAvailable": True,
+                    "supportedDeviceTypes": [{"identifier": "phone", "productFamily": "iPhone"}],
+                }
+                with (
+                    patch("ios.sys.platform", "darwin"),
+                    patch.dict(os.environ, {"DEVELOPER_DIR": str(developer)}),
+                    patch("ios.run", return_value=json.dumps({"runtimes": [runtime]})),
+                ):
+                    self.assertEqual(check_simulator(), (runtime["identifier"], "phone", application))
 
     def test_flutter_build_selects_reported_bundle_not_stale_or_runner_app(self):
         with tempfile.TemporaryDirectory() as directory:

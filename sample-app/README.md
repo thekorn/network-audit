@@ -1,6 +1,7 @@
 # network_audit_sample
 
-An Android Flutter sample for comparing native Dart and Android WebView traffic.
+A Flutter sample for comparing native Dart and WebView traffic. Android is the
+verified platform; the generated iOS platform awaits a Mac build and Simulator run.
 
 - **Products:** opening the app sends ten separate, concurrent GET requests to
   `https://dummyjson.com/products/1` through `/10`. The feed shows product images,
@@ -28,9 +29,23 @@ flutter pub get --enforce-lockfile
 flutter run -d <android-device-id>
 ```
 
-The app targets Android, not Flutter web. Use a real device or a KVM-capable host
+The app targets Android and iOS, not Flutter web. Use a real device or a KVM-capable host
 for an Android emulator; Amp orbs can build and test but cannot run an emulator.
 The configured Amp emulator runner is `thekorn-amp-runner`.
+
+For iOS Simulator on a Mac with full Xcode and an installed iOS runtime:
+
+```bash
+devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/products-ios.toml
+```
+
+Run that command from the repository root. This experimental scenario checks the
+ten product responses in both the UI and the network capture. It deliberately
+does not test BUNTE: shared WebKit helper traffic is outside the iOS backend's
+process-path capture scope. See [iOS requirements and limits](../network-audit/README.md#experimental-ios-simulator-backend).
+No iOS build, native UI, recording or capture has been verified yet. The Linux
+runner cannot do that; a Mac runner is required. The platform files were
+generated with the pinned Flutter SDK, without changing Dart code or dependencies.
 
 ## Check and build
 

@@ -75,6 +75,34 @@ Node.js/Mobilewright runtime. Auditing with it requires an externally supplied
 compatible Flutter/Android environment; most users should use the default
 package. It is safe to build and use for report generation in an orb.
 
+## Experimental Zig alternative
+
+`network-audit-zig/` ports the CLI, Android lifecycle, recording and report
+generation to **Zig 0.17.0**. The existing Python implementation stays the
+default; `audit` and `nix run github:thekorn/network-audit` are unchanged.
+The devenv shell also provides `zig`, `network-audit-zig` and `audit-zig`:
+
+```bash
+devenv shell audit-zig sample-app --scenario sample-app/scenarios/browse.toml --record
+nix run .#zig -- /path/to/app.apk --domain api.example.com
+```
+
+While this experiment is on its feature branch, run it remotely with:
+
+```bash
+nix run --refresh 'github:thekorn/network-audit?ref=feature/network-audit-zig#zig' -- /path/to/app.apk --domain api.example.com
+```
+
+After merge, `nix run --refresh github:thekorn/network-audit#zig -- ...` selects
+Zig explicitly. `#zig-core` provides the smaller package for report generation
+without emulator images. The same host, free-space and Android license
+requirements apply; never build the full `#zig` package or run `audit-zig`
+inside an orb.
+
+This is not a Python-free rewrite: it shares the mitmproxy addon, uses a small
+Python TOML/schema codec and keeps the existing Mobilewright runtime. See the
+[experiment's scope, usage and verification limits](network-audit-zig/README.md).
+
 ## Audit the sample
 
 On an **Apple Silicon Mac** or **KVM-capable x86_64 Linux host** (not in an Amp
@@ -240,8 +268,8 @@ devenv test
 ```
 
 `devenv test` shows a named result for toolchain and Android SDK checks, Pyright,
-Python tests, Flutter analysis, and Flutter tests. Successful analysis output and
-test totals are shown without `--verbose`; failed checks include their diagnostics.
+Python tests, Zig/CLI tests, Flutter analysis, and Flutter tests. Successful
+analysis output and test totals are shown without `--verbose`; failed checks include their diagnostics.
 All checks run even if another check fails, and any failure makes the command exit
 nonzero. Flutter commands run sequentially to avoid startup-lock contention.
 
@@ -258,9 +286,9 @@ Flutter's Android defaults against `nix/toolchain.nix`, and run `devenv test`,
 devenv CLI installed by orb setup; keep its version compatible with the modules
 pinned in `devenv.yaml`.
 
-`nix flake check` builds the core package, runs the Python tests (including real
-local HTTP/TLS proxy traffic), and tests the installed command and report
-template in a clean environment outside the source tree. It does **not**
+`nix flake check` builds both core packages, runs the Python tests (including real
+local HTTP/TLS proxy traffic) and Zig tests, and tests the installed commands and
+reports in a clean environment outside the source tree. It does **not**
 download emulator images or test a running Android device. Use `nix flake check
 --all-systems --no-build` to evaluate both supported platforms; build and run
 the default package on each native host for full acceptance testing.

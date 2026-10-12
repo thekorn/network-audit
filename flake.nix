@@ -21,16 +21,22 @@
           };
           core = pkgs.callPackage ./nix/package.nix { };
           full = core.override { withToolchain = true; };
+          zigCore = pkgs.callPackage ./nix/zig-package.nix { };
         in
         {
           packages = {
             default = full;
             network-audit = full;
             network-audit-core = core;
+            zig = zigCore.override { withToolchain = true; };
+            zig-core = zigCore;
           };
           # Never realize emulator images in orb/CI checks. The full package
           # must also be built and exercised on a supported native host.
-          checks.network-audit = core;
+          checks = {
+            network-audit = core;
+            network-audit-zig = zigCore;
+          };
           formatter = pkgs.nixfmt;
         };
       perSystem = forAllSystems packagesFor;
@@ -41,8 +47,8 @@
         system:
         nixpkgs.lib.mapAttrs (_: package: {
           type = "app";
-          program = "${package}/bin/network-audit";
-          meta.description = "Capture Android HTTP(S) traffic and generate offline audit reports";
+          program = nixpkgs.lib.getExe package;
+          meta.description = package.meta.description;
         }) perSystem.${system}.packages
       );
       checks = forAllSystems (system: perSystem.${system}.checks);

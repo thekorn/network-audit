@@ -1,5 +1,8 @@
 {
-  "include": ["network-audit"],
+  "include": ["network-audit", "network-audit-zig"],
   "typeCheckingMode": "standard",
-  "executionEnvironments": [{ "root": "network-audit" }]
+  "executionEnvironments": [
+    { "root": "network-audit" },
+    { "root": "network-audit-zig" }
+  ]
 }

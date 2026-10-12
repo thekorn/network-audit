@@ -25,3 +25,7 @@ __pycache__/
 
 # Optional Mobilewright scenario runtime.
 node_modules/
+
+# Zig build products and local compiler cache.
+.zig-cache/
+zig-out/

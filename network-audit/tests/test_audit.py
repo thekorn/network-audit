@@ -1128,7 +1128,7 @@ class IOSBackendTest(unittest.TestCase):
                 self.assertNotIn("QUIC is blocked", report)
                 self.assertIn("Total requests: 0", (session / "report.txt").read_text())
 
-    def test_recording_requires_successful_finalization_before_publishing(self):
+    def test_recording_starts_before_output_and_requires_successful_finalization(self):
         popen = subprocess.Popen
         for outcome in ("success", "failure"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
@@ -1136,7 +1136,7 @@ class IOSBackendTest(unittest.TestCase):
                 recorder = SimulatorRecording(Mock(serial="owned"), session)
 
                 def start(command, **kwargs):
-                    return popen([
+                    child = popen([
                         sys.executable, "-c",
                         "import signal,sys\nfrom pathlib import Path\n"
                         "path = Path(sys.argv[1])\n"
@@ -1144,14 +1144,20 @@ class IOSBackendTest(unittest.TestCase):
                         "    path.write_bytes(b'finalized fixture')\n"
                         f"    sys.exit({0 if outcome == 'success' else 9})\n"
                         "signal.signal(signal.SIGINT, finish)\n"
-                        "path.write_bytes(b'started fixture')\n"
+                        # simctl acknowledges the first frame on stderr, but
+                        # may not write the MP4 until SIGINT finalizes it.
+                        "print('Recording started', file=sys.stderr, flush=True)\n"
                         "signal.pause()\n",
                         command[-1],
                     ], **kwargs)
+                    self.addCleanup(child.wait, timeout=5)
+                    self.addCleanup(child.terminate)
+                    return child
 
                 with patch("ios.subprocess.Popen", side_effect=start):
                     recorder.start()
                     self.assertFalse((session / "recording.mp4").exists())
+                    self.assertFalse((session / "recording.partial.mp4").exists())
                     if outcome == "success":
                         self.assertEqual(recorder.stop(), session / "recording.mp4")
                         self.assertEqual((session / "recording.mp4").read_bytes(), b"finalized fixture")

@@ -226,7 +226,9 @@ class SimulatorRecording:
 
         def ready():
             self.check()
-            return self.partial.exists() and self.partial.stat().st_size > 0
+            # simctl documents this acknowledgement after the first frame.
+            # The MP4 may stay empty until SIGINT, so its size is not readiness.
+            return "Recording started" in self.log.read_text().splitlines()
 
         wait_for(ready, "Simulator recording; see recording.log", timeout=30)
 

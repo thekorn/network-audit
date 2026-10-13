@@ -28,6 +28,13 @@ in
     devenv.latestVersion =
       (builtins.fromTOML (builtins.readFile "${inputs.devenv}/Cargo.toml")).workspace.package.version;
 
+    # iOS needs the host's full Xcode, not Nix's macOS-only SDK. Let Apple's
+    # tools use xcode-select (or the caller's DEVELOPER_DIR) for SDK discovery.
+    apple.sdk = null;
+    # Xcode selects its own compiler driver for linking. Nix's LD=ld overrides
+    # that selection and sends compiler flags directly to the linker.
+    stdenv = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin pkgs.stdenvNoCC;
+
     packages = toolchain.packages ++ [
       python
       pkgs.mitmproxy
@@ -43,6 +50,19 @@ in
     # Keep the audit in the foreground: oneshot tasks have a five-second
     # shutdown deadline that can interrupt cleanup and report generation.
     scripts.audit.exec = ''
+      backend=android
+      previous=
+      for argument in "$@"; do
+        if [[ "$previous" == --backend ]]; then
+          backend="$argument"
+        elif [[ "$argument" == --backend=* ]]; then
+          backend="''${argument#--backend=}"
+        fi
+        previous="$argument"
+      done
+      if [[ "$backend" == ios ]]; then
+        exec devenv shell -- network-audit "$@"
+      fi
       exec devenv shell -O androidEmulator.enable:bool true -- network-audit "$@"
     '';
 

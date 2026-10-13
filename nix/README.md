@@ -5,6 +5,13 @@
 3.47.4. `flutter.nix` keeps nixpkgs' normal builder, patches, precached engine
 artifacts and runtime wrappers while selecting the newer release.
 
+It also backports Flutter's [copied-framework permission fix](https://github.com/flutter/flutter/commit/92041655586094519e44bc471b3700765b81c8c8).
+macOS 15.4+ `openrsync` ignores Flutter's `--chmod` option, so frameworks copied
+from the Nix store remain read-only and `lipo` cannot create `Flutter.lipo`.
+The upstream patch makes only the copied build-output frameworks writable;
+the SDK remains immutable. Passing the patch through `mkFlutter` also rebuilds
+the tool snapshot, rather than changing unused Dart source alone.
+
 The metadata was generated, not hand-edited, using the updater from the exact
 nixpkgs revision pinned in `devenv.lock`:
 
@@ -34,11 +41,11 @@ Run `.agents/setup`, `devenv test`, `nix flake check`, and a starter-app `flutte
 NDK and build-tools versions too. Do not mistake successful metadata generation
 for a successful application build.
 
-When the locked nixpkgs ships the desired release, replace the `flutter` binding
-in `nix/toolchain.nix` with `pkgs.flutter` and remove the override and generated
-metadata. This shared expression supplies both devenv and the distribution
-flake; keep the nixpkgs revisions in `devenv.lock` and `flake.lock` aligned when
-updating the toolchain.
+When the locked nixpkgs ships the desired release and includes the permission
+fix, replace the `flutter` binding in `nix/toolchain.nix` with `pkgs.flutter` and
+remove the override and generated metadata. This shared expression supplies
+both devenv and the distribution flake; keep the nixpkgs revisions in
+`devenv.lock` and `flake.lock` aligned when updating the toolchain.
 
 ## Mobilewright runtime
 

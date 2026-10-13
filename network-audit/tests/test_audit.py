@@ -1445,7 +1445,6 @@ import assert from 'node:assert/strict';
 import { ios, android } from 'mobilewright';
 import { MobilecliDriver } from '@mobilewright/driver-mobilecli';
 import { NativeIOSDriver } from './native-ios-driver.mjs';
-Object.defineProperty(process, 'platform', { value: 'darwin' });
 let attached = false, closed = false, disposed = false;
 android.launch = async () => { throw new Error('Used Android launcher for iOS'); };
 ios.launch = async (options) => {

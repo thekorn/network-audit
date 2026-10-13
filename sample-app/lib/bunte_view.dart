@@ -94,7 +94,7 @@ class _BunteViewState extends State<BunteView> {
                       style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                     Text(
-                      'ANDROID WEBVIEW',
+                      'WEBVIEW',
                       style: TextStyle(fontSize: 10, letterSpacing: 1),
                     ),
                   ],

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, launch, capture, and report a local Android audit."""
+"""Build, launch, capture, and report an Android or iOS Simulator audit."""
 
 import argparse
 import json
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from android import DIMENSION_SHORTCUTS, Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
+from ios import Simulator, SimulatorRecording, app_identity, build_app, check_simulator
 from recording import ScreenRecording
 from report import generate_report
 from scenario import load_scenario, run_scenario
@@ -27,24 +28,38 @@ ROOT = Path(__file__).resolve().parent
 def parser():
     result = argparse.ArgumentParser(prog="network-audit", description=__doc__)
     result.add_argument(
-        "app", type=Path, help="Flutter project directory or Android APK"
+        "app", type=Path, help="Flutter project directory, Android APK, or iOS Simulator .app"
+    )
+    result.add_argument(
+        "--backend",
+        choices=("android", "ios"),
+        default="android",
+        help="Device backend (default: android); ios is experimental and requires macOS/Xcode",
+    )
+    result.add_argument(
+        "--ios-runtime",
+        help="iOS runtime identifier (default: newest available compatible runtime)",
+    )
+    result.add_argument(
+        "--ios-device-type",
+        help="iOS device type identifier (default: first compatible iPhone)",
     )
     result.add_argument(
         "--use-fvm",
         action="store_true",
-        help="Use 'fvm flutter' for Flutter project builds (ignored for APKs)",
+        help="Use 'fvm flutter' for Flutter project builds (ignored for prebuilt apps)",
     )
     result.add_argument(
         "--flavor",
         metavar="IDENTIFIER",
-        help="Flutter build flavor; overrides scenario flavor; not for APKs",
+        help="Flutter build flavor; overrides scenario flavor; not for prebuilt apps",
     )
     result.add_argument(
         "--dart-define-from-file",
         action="append",
         default=[],
         metavar="PATH",
-        help="JSON or .env file for Flutter compile-time values; repeatable or comma-separated; paths relative to the current directory; not for APKs",
+        help="JSON or .env file for Flutter compile-time values; repeatable or comma-separated; paths relative to the current directory; not for prebuilt apps",
     )
     result.add_argument(
         "--domain",
@@ -62,17 +77,17 @@ def parser():
         action="store_true",
         # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
         default=sys.platform == "linux" and not os.environ.get("DISPLAY"),
-        help="Hide the emulator window (automatic on Linux without DISPLAY)",
+        help="Hide the emulator/Simulator window (automatic on Linux without DISPLAY)",
     )
     result.add_argument(
         "--dimensions",
         choices=DIMENSION_SHORTCUTS,
-        help="Emulator display shortcut; overrides scenario dimensions",
+        help="Android display shortcut; overrides scenario dimensions (ignored with a warning on iOS)",
     )
     result.add_argument(
         "--record",
         action="store_true",
-        help="Record the emulator screen to a silent recording.mp4 beside the report",
+        help="Record the device screen to a silent recording.mp4 beside the report",
     )
     result.add_argument(
         "--scenario",
@@ -89,7 +104,7 @@ def parser():
         "--close-grace",
         type=float,
         default=5,
-        help="Seconds outside the foreground before finishing (default: 5)",
+        help="Android: seconds outside the foreground before finishing (default: 5); iOS: use Ctrl+C",
     )
     result.add_argument(
         "--body-limit",
@@ -118,6 +133,14 @@ def audit(args):
     app = args.app.resolve()
     if not app.exists():
         raise ValueError(f"App not found: {app}")
+    is_ios = args.backend == "ios"
+    is_project = app.is_dir() and app.suffix != ".app"
+    if not is_ios and (args.ios_runtime is not None or args.ios_device_type is not None):
+        raise ValueError("--ios-runtime and --ios-device-type require --backend=ios")
+    if is_ios and not is_project:
+        app_identity(app)
+    elif not is_ios and app.suffix == ".app":
+        raise ValueError("Simulator .app bundles require --backend=ios")
     if (
         not math.isfinite(args.close_grace)
         or args.close_grace <= 0
@@ -137,15 +160,22 @@ def audit(args):
         flavor = None
     if args.dimensions is not None:
         dimensions = DIMENSION_SHORTCUTS[args.dimensions].copy()
+    if is_ios and dimensions is not None:
+        print(
+            "Warning: dimensions are ignored on iOS; use --ios-device-type to select an iOS display.",
+            file=sys.stderr,
+            flush=True,
+        )
+        dimensions = None
     if args.flavor is not None:
         flavor = args.flavor
     if flavor is not None:
         if not flavor.strip():
             raise ValueError("--flavor must be a non-blank identifier")
-        if not app.is_dir():
+        if not is_project:
             raise ValueError(
                 "Flavor configuration (--flavor or scenario flavor) "
-                "requires a Flutter project, not an APK"
+                "requires a Flutter project, not an APK or .app"
             )
     define_files = [
         Path(path).resolve()
@@ -154,10 +184,10 @@ def audit(args):
     ]
     if not define_files and env_file is not None:
         define_files = [env_file]
-    if define_files and not app.is_dir():
+    if define_files and not is_project:
         raise ValueError(
             "Dart define configuration (--dart-define-from-file or scenario env-file) "
-            "requires a Flutter project, not an APK"
+            "requires a Flutter project, not an APK or .app"
         )
     for path in define_files:
         if not path.is_file():
@@ -165,48 +195,59 @@ def audit(args):
     if args.domain is not None or not scenario:
         domains = normalize_domains(args.domain or [])
     flutter = ["fvm", "flutter"] if args.use_fvm else ["flutter"]
+    # Reject Linux before dependency checks, rather than suggesting Android tools.
+    configuration = check_simulator(args.ios_runtime, args.ios_device_type) if is_ios else None
     for tool in (
-        "adb",
-        "emulator",
-        "avdmanager",
+        *(("xcrun",) if is_ios else ("adb", "emulator", "avdmanager")),
         "mitmdump",
         "openssl",
-        *([flutter[0]] if app.is_dir() else []),
+        *([flutter[0]] if is_project else []),
     ):
         if not shutil.which(tool):
             if tool == "fvm":
                 raise RuntimeError(
                     "Missing fvm. Install FVM and add it to PATH to use --use-fvm."
                 )
+            if is_ios:
+                raise RuntimeError(
+                    f"Missing {tool}. Use the Nix core package and a macOS Flutter/Xcode environment."
+                )
             raise RuntimeError(
                 f"Missing {tool}. Enter devenv with androidEmulator.enable = true "
                 "on an Apple Silicon Mac or x86_64 Linux KVM host."
             )
-    system_image = check_emulator()
-    if app.is_dir():
+    system_image = None if is_ios else check_emulator()
+    if is_project:
         if not (app / "pubspec.lock").exists():
             raise ValueError("Flutter projects must have a committed pubspec.lock")
+        if is_ios and not (app / "ios").is_dir():
+            raise ValueError(
+                "Flutter project has no ios platform; add it with 'flutter create --platforms=ios .'"
+            )
         subprocess.run(
             [*flutter, "pub", "get", "--enforce-lockfile"], cwd=app, check=True
         )
-        subprocess.run(
-            [
-                *flutter,
-                "build",
-                "apk",
-                "--debug",
-                "--no-pub",
-                *(["--flavor", flavor] if flavor is not None else []),
-                *(f"--dart-define-from-file={path}" for path in define_files),
-            ],
-            cwd=app,
-            check=True,
-        )
-        apk_name = f"app-{flavor.lower()}-debug.apk" if flavor is not None else "app-debug.apk"
-        apk = app / "build/app/outputs/flutter-apk" / apk_name
+        if is_ios:
+            artifact = build_app(app, flutter, flavor, define_files)
+        else:
+            subprocess.run(
+                [
+                    *flutter,
+                    "build",
+                    "apk",
+                    "--debug",
+                    "--no-pub",
+                    *(["--flavor", flavor] if flavor is not None else []),
+                    *(f"--dart-define-from-file={path}" for path in define_files),
+                ],
+                cwd=app,
+                check=True,
+            )
+            apk_name = f"app-{flavor.lower()}-debug.apk" if flavor is not None else "app-debug.apk"
+            artifact = app / "build/app/outputs/flutter-apk" / apk_name
     else:
-        apk = app
-    package, activity = apk_identity(apk)
+        artifact = app
+    package, activity = (app_identity(artifact), None) if is_ios else apk_identity(artifact)
     args.output.mkdir(parents=True, exist_ok=True)
     session = Path(
         tempfile.mkdtemp(
@@ -216,13 +257,19 @@ def audit(args):
     ).resolve()
     metadata = {
         "app": app.name,
+        "backend": args.backend,
         "package": package,
         "domains": domains,
         "started": datetime.now(UTC).isoformat(),
         "state": "starting",
         "body_limit": args.body_limit,
-        "close_grace": args.close_grace,
+        "close_grace": None if is_ios else args.close_grace,
     }
+    if is_ios:
+        metadata["capture_scope"] = (
+            "Executable paths within the owned Simulator; "
+            "shared WebKit/system helpers are not included"
+        )
     if scenario:
         metadata["scenario"] = str(scenario)
         metadata["executor"] = str(executor)
@@ -238,16 +285,25 @@ def audit(args):
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,
     )
-    if args.headless:
+    if is_ios:
+        print(
+            "Experimental iOS capture: macOS may request approval for Mitmproxy Redirector. "
+            "Only executable paths within this Simulator are captured; shared WebKit/system "
+            "helpers are not included. Host proxy settings and host trust are not changed. "
+            "Finish with Ctrl+C or scenario completion (Home does not stop capture).",
+            flush=True,
+        )
+    elif args.headless:
         print(
             "Running headless (no emulator window). Use ADB to interact, "
             "or press Ctrl+C to finish. For a window on Linux, run from a "
             "graphical session with DISPLAY set and omit --headless.",
             flush=True,
         )
-    proxy = emulator = recording = None
+    proxy = emulator = simulator = recording = None
     failure = None
     recording_failure = None
+    cleanup_failure = None
     try:
         with (
             tempfile.TemporaryDirectory(prefix="network-audit-") as temporary,
@@ -265,9 +321,21 @@ def audit(args):
                     "NETWORK_AUDIT_DOMAINS": json.dumps(domains),
                     "NETWORK_AUDIT_BODY_LIMIT": str(args.body_limit),
                 }
+                if is_ios:
+                    simulator = Simulator(
+                        Path(temporary).name, emulator_log, args.headless, configuration
+                    )
+                    metadata["ios_device_name"] = simulator.name
+                    save()
+                    simulator.create()
+                    metadata["device"] = simulator.serial
+                    metadata["ios_runtime"] = simulator.runtime
+                    metadata["ios_device_type"] = simulator.device_type
+                    save()
                 proxy = subprocess.Popen(
                     [
                         "mitmdump",
+                        *(["--mode", simulator.capture_mode] if simulator else []),
                         "--listen-host",
                         "127.0.0.1",
                         "--listen-port",
@@ -295,64 +363,94 @@ def audit(args):
                         ca_dir / "mitmproxy-ca-cert.pem"
                     ).exists()
 
-                wait_for(proxy_ready, "mitmproxy", timeout=30)
-                emulator = Emulator(
-                    temporary,
-                    emulator_log,
-                    port,
-                    args.headless,
-                    system_image,
-                    dimensions=dimensions,
+                wait_for(
+                    proxy_ready,
+                    "mitmproxy (approve Mitmproxy Redirector if prompted)" if is_ios else "mitmproxy",
+                    timeout=120 if is_ios else 30,
                 )
-                print("Booting a disposable Android API 36 emulator…", flush=True)
-                emulator_process = emulator.start()
-                emulator.install_ca(ca_dir / "mitmproxy-ca-cert.pem")
-                metadata["device"] = emulator.serial
+                emulator_process = None
+                if simulator:
+                    print("Booting a disposable iOS Simulator…", flush=True)
+                    simulator.start()
+                    device = simulator
+                else:
+                    emulator = Emulator(
+                        temporary,
+                        emulator_log,
+                        port,
+                        args.headless,
+                        system_image,
+                        dimensions=dimensions,
+                    )
+                    print("Booting a disposable Android API 36 emulator…", flush=True)
+                    emulator_process = emulator.start()
+                    device = emulator
+                device.install_ca(ca_dir / "mitmproxy-ca-cert.pem")
+                metadata["device"] = device.serial
                 save()
                 if args.record:
-                    recording = ScreenRecording(emulator, session)
+                    recording = (
+                        SimulatorRecording(simulator, session) if simulator else
+                        ScreenRecording(emulator, session)
+                    )
                     recording.start()
-                    print("Recording the emulator screen (no audio).", flush=True)
-                emulator.launch(apk, package, activity)
-                wait_for(
-                    lambda: emulator.foreground(package),
-                    "app in foreground",
-                    timeout=30,
-                )
-                metadata["state"] = "capturing"
-                save()
+                    print("Recording the device screen (no audio).", flush=True)
+
+                def launch_app():
+                    device.launch(artifact, package, activity)
+                    if emulator:
+                        foreground = emulator.foreground
+                        wait_for(
+                            lambda: foreground(package),
+                            "app in foreground",
+                            timeout=30,
+                        )
+                    metadata["state"] = "capturing"
+                    save()
+
+                def device_running():
+                    if simulator:
+                        return simulator.is_booted()
+                    assert emulator_process is not None
+                    return emulator_process.poll() is None
 
                 def check_running():
                     if proxy.poll() is not None:
                         raise RuntimeError(
                             "mitmdump stopped unexpectedly; see proxy.log"
                         )
-                    if emulator_process.poll() is not None:
+                    if not device_running():
                         raise RuntimeError(
-                            "Emulator stopped during scenario; see emulator.log"
+                            "Device stopped during scenario; see emulator.log"
                         )
                     if recording:
                         recording.check()
 
                 if executor:
                     print(
-                        f"Running scenario on {emulator.serial}: {scenario}\n"
+                        f"Running scenario on {device.serial}: {scenario}\n"
                         f"Scenario log: {session / 'scenario.log'}",
                         flush=True,
                     )
                     run_scenario(
                         executor,
-                        serial=emulator.serial,
-                        device_id=emulator.device_id,
+                        serial=device.serial,
+                        device_id=device.device_id,
                         package=package,
                         session=session,
                         timeout=args.scenario_timeout,
                         check_running=check_running,
+                        backend=args.backend,
+                        launch_app=launch_app,
                     )
                     metadata["state"] = "scenario completed"
                 else:
+                    launch_app()
                     print(
-                        f"App running on {emulator.serial}. Close/leave the app for {args.close_grace:g}s, or press Ctrl+C to finish.",
+                        f"App running on {device.serial}. " + (
+                            "Press Ctrl+C to finish." if is_ios else
+                            f"Close/leave the app for {args.close_grace:g}s, or press Ctrl+C to finish."
+                        ),
                         flush=True,
                     )
                     absent_since = None
@@ -361,12 +459,12 @@ def audit(args):
                             raise RuntimeError(
                                 "mitmdump stopped unexpectedly; see proxy.log"
                             )
-                        if emulator_process.poll() is not None:
-                            metadata["state"] = "emulator closed"
+                        if not device_running():
+                            metadata["state"] = "simulator closed" if is_ios else "emulator closed"
                             break
                         if recording:
                             recording.check()
-                        if emulator.foreground(package):
+                        if emulator is None or emulator.foreground(package):
                             absent_since = None
                         elif absent_since is None:
                             absent_since = time.monotonic()
@@ -393,7 +491,16 @@ def audit(args):
                             metadata["recording_failure"] = recording_failure
                             print(recording_failure, file=sys.stderr, flush=True)
                     try:
-                        if emulator:
+                        if simulator:
+                            try:
+                                simulator.close()
+                            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+                                cleanup_failure = f"Simulator cleanup failed: {error}"
+                                metadata["device_cleanup_failure"] = cleanup_failure
+                                print(cleanup_failure, file=sys.stderr, flush=True)
+                            finally:
+                                metadata["device"] = simulator.serial
+                        elif emulator:
                             emulator.close()
                     finally:
                         stop_proxy(proxy)
@@ -402,7 +509,7 @@ def audit(args):
                         signal.signal(sig, handler)
     except KeyboardInterrupt:
         metadata["state"] = "interrupted by user"
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         metadata["state"] = "failed"
         detail = getattr(error, "stderr", None) or str(error)
         # TimeoutExpired retains bytes even when subprocess.run uses text=True.
@@ -411,6 +518,10 @@ def audit(args):
         metadata["failure"] = detail
         failure = detail
     finally:
+        if cleanup_failure and not failure:
+            metadata["state"] = "failed"
+            metadata["failure"] = cleanup_failure
+            failure = cleanup_failure
         if recording_failure and not failure:
             metadata["state"] = "failed"
             metadata["failure"] = recording_failure

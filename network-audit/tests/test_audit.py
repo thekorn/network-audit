@@ -3,6 +3,7 @@ import gzip
 import http.client
 import json
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -14,7 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import chdir, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import chdir, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from itertools import product
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
+from ios import SimulatorRecording, app_identity, build_app, check_simulator
 from recording import ScreenRecording
 from report import generate_report, read_events
 from scenario import RUNNER, run_scenario, validate_executor
@@ -197,7 +199,10 @@ class AuditSessionTest(unittest.TestCase):
                     self.assertEqual(
                         (session / "recording.mp4").read_bytes(), b"finalized video fixture"
                     )
-                    self.assertIn(f"Video: {session / 'recording.mp4'}", output.getvalue())
+                    self.assertIn(
+                        f"Video: {(session / 'recording.mp4').resolve()}",
+                        output.getvalue().splitlines(),
+                    )
                 else:
                     self.assertNotIn("recording", metadata)
                     self.assertFalse((session / "recording.mp4").exists())
@@ -674,7 +679,8 @@ class AuditSessionTest(unittest.TestCase):
                     config.write_text(
                         f'executor = "executor.mjs"\ndimensions = {definition}\n'
                     )
-                    for override in (None, "big"):
+                    for backend, override in product(("android", "ios"), (None, "big")):
+                        args.backend = backend
                         args.dimensions = override
                         with self.assertRaisesRegex(ValueError, message):
                             audit(args)
@@ -866,6 +872,322 @@ class EmulatorOptionsTest(unittest.TestCase):
                 )
 
 
+class IOSBackendTest(unittest.TestCase):
+    def bundle(self, root, name="Sample.app", platform="iPhoneSimulator"):
+        app = root / name
+        app.mkdir(parents=True)
+        (app / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "test.ios.app",
+            "CFBundleSupportedPlatforms": [platform],
+        }, fmt=plistlib.FMT_BINARY))
+        return app
+
+    def test_backend_defaults_and_rejects_incompatible_inputs_before_session(self):
+        self.assertEqual(parser().parse_args(["sample-app"]).backend, "android")
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            parser().parse_args(["sample-app", "--backend=windows"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.bundle(root)
+            device_app = self.bundle(root, "Device.app", "iPhoneOS")
+            invalid_app = self.bundle(root, "Invalid.app")
+            (invalid_app / "Info.plist").write_text('<?xml version="1.0"?><plist><dict>')
+            apk = root / "app.apk"
+            apk.touch()
+            cases = (
+                (app, ["--backend=ios"], RuntimeError, "requires macOS"),
+                (app, [], ValueError, "require --backend=ios"),
+                (apk, ["--backend=ios"], ValueError, "not an IPA/APK"),
+                (device_app, ["--backend=ios"], ValueError, "not a physical iOS device"),
+                (invalid_app, ["--backend=ios"], ValueError, "Cannot read Simulator app Info.plist"),
+                (app, ["--backend=ios", "--flavor=stage"], ValueError, "requires a Flutter project"),
+                (app, ["--backend=ios", "--dart-define-from-file=x.json"], ValueError, "requires a Flutter project"),
+                (apk, ["--ios-runtime=test"], ValueError, "require --backend=ios"),
+                (apk, ["--ios-runtime="], ValueError, "require --backend=ios"),
+                (apk, ["--ios-device-type="], ValueError, "require --backend=ios"),
+            )
+            for path, options, error, message in cases:
+                with (
+                    self.subTest(options=options, app=path.name),
+                    patch("ios.sys.platform", "linux"),
+                    self.assertRaisesRegex(error, message),
+                ):
+                    audit(parser().parse_args([
+                        str(path), "--domain=example.test", "--output", str(root / "runs"),
+                        *options,
+                    ]))
+                self.assertFalse((root / "runs").exists())
+
+    def test_runtime_selection_uses_available_compatible_ios_versions(self):
+        prefix = "com.apple.CoreSimulator.SimRuntime."
+        phone = {"identifier": "phone", "productFamily": "iPhone"}
+        tablet = {"identifier": "tablet", "productFamily": "iPad"}
+        runtimes = [
+            {"identifier": prefix + name, "version": version, "isAvailable": available,
+             "supportedDeviceTypes": devices}
+            for name, version, available, devices in (
+                ("iOS-9-0", "9.0", True, [phone]),
+                ("iOS-18-2", "18.2", True, [tablet, phone]),
+                ("iOS-18-10", "18.10", True, [phone]),
+                ("iOS-99-0", "99.0", False, [phone]),
+                ("tvOS-100-0", "100.0", True, [phone]),
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            developer = Path(directory)
+            application = developer / "Applications/Simulator.app"
+            application.mkdir(parents=True)
+            with (
+                patch("ios.sys.platform", "darwin"),
+                patch.dict(os.environ, {"DEVELOPER_DIR": str(developer)}),
+                patch("ios.run", return_value=json.dumps({"runtimes": runtimes})),
+            ):
+                self.assertEqual(check_simulator(), (prefix + "iOS-18-10", "phone", application))
+                self.assertEqual(check_simulator(device_type="tablet"), (prefix + "iOS-18-2", "tablet", application))
+                self.assertEqual(check_simulator(prefix + "iOS-9-0")[0], prefix + "iOS-9-0")
+                for runtime, device_type in ((prefix + "iOS-99-0", None), (None, "missing"), (prefix + "iOS-9-0", "tablet")):
+                    with self.assertRaisesRegex(RuntimeError, "No available iOS"):
+                        check_simulator(runtime, device_type)
+
+    def test_simulator_application_supports_xcode_layouts(self):
+        for relative in (
+            "Developer/Applications/Simulator.app",
+            "Developer/Applications/DeviceHub.app",
+            "Applications/DeviceHub.app",
+        ):
+            with self.subTest(application=relative), tempfile.TemporaryDirectory() as directory:
+                contents = Path(directory) / "Xcode Beta.app/Contents"
+                developer = contents / "Developer"
+                developer.mkdir(parents=True)
+                application = contents / relative
+                application.mkdir(parents=True)
+                runtime = {
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    "version": "27.0",
+                    "isAvailable": True,
+                    "supportedDeviceTypes": [{"identifier": "phone", "productFamily": "iPhone"}],
+                }
+                with (
+                    patch("ios.sys.platform", "darwin"),
+                    patch.dict(os.environ, {"DEVELOPER_DIR": str(developer)}),
+                    patch("ios.run", return_value=json.dumps({"runtimes": [runtime]})),
+                ):
+                    self.assertEqual(check_simulator(), (runtime["identifier"], "phone", application))
+
+    def test_flutter_build_selects_reported_bundle_not_stale_or_runner_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            selected = self.bundle(root, "build/ios/iphonesimulator/My Stage App.app")
+            self.bundle(root, "build/ios/iphonesimulator/Runner.app")
+            executable = root / "flutter fixture"
+            executable.write_text(
+                f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
+                "Path('arguments.json').write_text(json.dumps(sys.argv[1:]))\n"
+                f"print('✓ Built {selected.relative_to(root)} (12.3MB)')\n"
+            )
+            executable.chmod(0o700)
+            for prefix in ([], ["flutter"]):
+                with self.subTest(prefix=prefix), redirect_stdout(StringIO()):
+                    result = build_app(root, [str(executable), *prefix], "Stage", [root / "config file.json"])
+                self.assertEqual(result, selected)
+                self.assertEqual(app_identity(result), "test.ios.app")
+                self.assertEqual(json.loads((root / "arguments.json").read_text()), [
+                    *prefix, "build", "ios", "--simulator", "--debug", "--no-codesign",
+                    "--no-pub", "--flavor", "Stage", f"--dart-define-from-file={root / 'config file.json'}",
+                ])
+            executable.write_text(f"#!{sys.executable}\nprint('build did not finish')\n")
+            with redirect_stdout(StringIO()), self.assertRaisesRegex(RuntimeError, "did not report"):
+                build_app(root, [str(executable)], None, [])
+            executable.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(7)\n")
+            with redirect_stdout(StringIO()), self.assertRaises(subprocess.CalledProcessError):
+                build_app(root, [str(executable)], None, [])
+
+    @unittest.skipUnless(shutil.which("mitmdump"), "mitmdump is supplied by devenv")
+    def test_owned_simulator_cleanup_and_reports_across_failures(self):
+        # Real mitmproxy/report IO, but regular proxy transport replaces macOS
+        # local capture and an in-memory simctl boundary replaces CoreSimulator.
+        # These are lifecycle tests, not evidence of native iOS interception.
+        owned = "E83EA845-AD13-43CC-BCAD-B56C379847CA"
+        other = "9B2D97C0-BB1E-4087-BFAB-60008CE7F0C8"
+        popen = subprocess.Popen
+        outcomes = (
+            "completed", "create", "boot", "keychain", "install", "launch",
+            "scenario", "interrupt", "proxy", "shutdown", "launch and shutdown",
+            "manual interrupt", "manual shutdown",
+        )
+        table = "dimensions = { width = 720, height = 1600, density = 240 }"
+        cases = [(outcome, "", None) for outcome in outcomes] + [
+            ("completed", table, None),
+            ("completed", 'dimensions = "big"', None),
+            ("completed", "", "big"),
+            ("completed", table, "big"),
+            ("manual shutdown", "", "big"),
+        ]
+        for outcome, definition, shortcut in cases:
+            with (
+                self.subTest(outcome=outcome, dimensions=definition, shortcut=shortcut),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                app = self.bundle(root)
+                scenario = root / "scenario.toml"
+                scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
+                (root / "executor.mjs").write_text("export default async function () {}\n")
+                devices = {other: "Booted"}
+                names = {other: "Unrelated"}
+                installed = {}
+                trusted = set()
+                children = []
+
+                def simctl(command, **_kwargs):
+                    self.assertEqual(command[:2], ["xcrun", "simctl"])
+                    action, *arguments = command[2:]
+                    if action == "create":
+                        devices[owned] = "Shutdown"
+                        names[owned] = arguments[0]
+                        if outcome == "create":
+                            raise subprocess.TimeoutExpired(command, 60)
+                        return owned
+                    if action == "list":
+                        if "booted" in arguments and outcome == "manual interrupt":
+                            raise KeyboardInterrupt
+                        if "booted" in arguments and outcome == "manual shutdown":
+                            devices[owned] = "Shutdown"
+                        return json.dumps({"devices": {"runtime": [
+                            {"udid": identifier, "state": state, "name": names[identifier]}
+                            for identifier, state in devices.items()
+                            if "booted" not in arguments or state == "Booted"
+                        ]}})
+                    self.assertEqual(arguments[0], owned, "Must never mutate an unrelated Simulator")
+                    if action in outcome.split(" and "):
+                        raise subprocess.CalledProcessError(1, command, stderr=f"fixture {action} failure")
+                    if action == "boot":
+                        devices[owned] = "Booted"
+                    elif action == "keychain":
+                        self.assertEqual(arguments[1], "add-root-cert")
+                        self.assertIn("BEGIN CERTIFICATE", Path(arguments[2]).read_text())
+                        trusted.add(owned)
+                    elif action == "install":
+                        self.assertIn(owned, trusted)
+                        installed[owned] = app_identity(Path(arguments[1]))
+                    elif action == "launch":
+                        self.assertEqual(installed[owned], arguments[1])
+                    elif action == "shutdown":
+                        devices[owned] = "Shutdown"
+                    elif action == "delete":
+                        del devices[owned]
+                    else:
+                        self.assertEqual(action, "bootstatus")
+                    return ""
+
+                def start(command, **kwargs):
+                    if command[0] == "mitmdump":
+                        self.assertEqual(command[1:3], ["--mode", f"local:{owned}/"])
+                        command = [command[0], *command[3:]]
+                        if outcome == "proxy":
+                            command = [sys.executable, "-c", "raise SystemExit(1)"]
+                        child = popen(command, **kwargs)
+                        children.append(child)
+                        return child
+                    return popen(command, **kwargs)
+
+                def execute(_path, *, backend, serial, device_id, package, check_running, launch_app, **_kwargs):
+                    self.assertEqual((backend, serial, device_id, package), ("ios", owned, owned, "test.ios.app"))
+                    check_running()
+                    launch_app()
+                    if outcome == "scenario":
+                        raise RuntimeError("fixture scenario failure")
+                    if outcome == "interrupt":
+                        raise KeyboardInterrupt
+
+                with (
+                    patch("cli.check_simulator", return_value=("runtime", "phone", "Simulator.app")),
+                    patch("cli.check_emulator", side_effect=AssertionError("iOS must not check Android")),
+                    patch("ios.run", side_effect=simctl),
+                    patch("cli.subprocess.Popen", side_effect=start),
+                    patch("cli.run_scenario", side_effect=execute),
+                    patch("cli.shutil.which", side_effect=lambda name: None if name in ("adb", "emulator", "flutter", "fvm") else "available"),
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(StringIO()) as errors,
+                ):
+                    args = parser().parse_args([
+                        str(app), "--backend=ios", "--use-fvm", "--headless",
+                        *(["--domain=example.test"] if outcome.startswith("manual") else ["--scenario", str(scenario)]),
+                        *(["--dimensions", shortcut] if shortcut else []),
+                        "--output", str(root / "runs"),
+                    ])
+                    if outcome == "completed" or outcome.startswith("manual"):
+                        self.assertEqual(audit(args), 0)
+                    elif outcome == "interrupt":
+                        self.assertEqual(audit(args), 130)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            audit(args)
+                self.assertEqual(
+                    errors.getvalue().count("dimensions are ignored on iOS"),
+                    1 if definition or shortcut else 0,
+                )
+                self.assertEqual(devices, {other: "Booted"})
+                self.assertTrue(all(child.poll() is not None for child in children))
+                (session,) = (root / "runs").iterdir()
+                metadata = json.loads((session / "session.json").read_text())
+                self.assertEqual(metadata["backend"], "ios")
+                self.assertEqual(metadata["device"], owned)
+                if definition or shortcut:
+                    self.assertEqual(metadata["ios_device_type"], "phone")
+                self.assertEqual(metadata["state"], {
+                    "completed": "scenario completed", "interrupt": "interrupted by user",
+                    "manual interrupt": "interrupted by user", "manual shutdown": "simulator closed",
+                }.get(outcome, "failed"))
+                if outcome == "launch and shutdown":
+                    self.assertEqual(metadata["failure"], "fixture launch failure")
+                    self.assertIn("device_cleanup_failure", metadata)
+                report = (session / "report.html").read_text()
+                self.assertIn("Experimental iOS Simulator", report)
+                self.assertIn("shared WebKit/system helpers are not included", report)
+                self.assertNotIn("QUIC is blocked", report)
+                self.assertIn("Total requests: 0", (session / "report.txt").read_text())
+
+    def test_recording_starts_before_output_and_requires_successful_finalization(self):
+        popen = subprocess.Popen
+        for outcome in ("success", "failure"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                session = Path(directory)
+                recorder = SimulatorRecording(Mock(serial="owned"), session)
+
+                def start(command, **kwargs):
+                    child = popen([
+                        sys.executable, "-c",
+                        "import signal,sys\nfrom pathlib import Path\n"
+                        "path = Path(sys.argv[1])\n"
+                        "def finish(*_):\n"
+                        "    path.write_bytes(b'finalized fixture')\n"
+                        f"    sys.exit({0 if outcome == 'success' else 9})\n"
+                        "signal.signal(signal.SIGINT, finish)\n"
+                        # simctl acknowledges the first frame on stderr, but
+                        # may not write the MP4 until SIGINT finalizes it.
+                        "print('Recording started', file=sys.stderr, flush=True)\n"
+                        "signal.pause()\n",
+                        command[-1],
+                    ], **kwargs)
+                    self.addCleanup(child.wait, timeout=5)
+                    self.addCleanup(child.terminate)
+                    return child
+
+                with patch("ios.subprocess.Popen", side_effect=start):
+                    recorder.start()
+                    self.assertFalse((session / "recording.mp4").exists())
+                    self.assertFalse((session / "recording.partial.mp4").exists())
+                    if outcome == "success":
+                        self.assertEqual(recorder.stop(), session / "recording.mp4")
+                        self.assertEqual((session / "recording.mp4").read_bytes(), b"finalized fixture")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "recording failed"):
+                            recorder.stop()
+                        self.assertFalse((session / "recording.mp4").exists())
+                        self.assertTrue((session / "recording.partial.mp4").exists())
+
+
 @unittest.skipUnless(shutil.which("mitmdump"), "mitmdump is supplied by devenv")
 class ScenarioAuditTest(unittest.TestCase):
     def test_omitted_domains_capture_all_and_cli_override_filters(self):
@@ -899,7 +1221,8 @@ class ScenarioAuditTest(unittest.TestCase):
                         ]
                     )
 
-                    def execute(*_args, **_kwargs):
+                    def execute(*_args, launch_app, **_kwargs):
+                        launch_app()
                         # Use the proxy port handed to the emulator boundary.
                         port = emulator.call_args.args[2]
                         for host in ("localhost", "127.0.0.1"):
@@ -993,7 +1316,8 @@ class ScenarioAuditTest(unittest.TestCase):
                     ]
                 )
 
-                def execute(path, *, session, **_kwargs):
+                def execute(path, *, session, launch_app, **_kwargs):
+                    launch_app()
                     (session / "scenario.log").write_text(path.read_text())
                     if outcome:
                         raise outcome
@@ -1030,6 +1354,118 @@ class ScenarioAuditTest(unittest.TestCase):
 
 
 class ScenarioProcessTest(unittest.TestCase):
+    def test_ios_preparation_preserves_first_app_launch_and_bounds_failures(self):
+        # Real private daemon, runner and process cleanup; only the device-side
+        # install/start commands are fixtures. Native acceptance covers DeviceKit.
+        popen = subprocess.Popen
+        for backend, outcome, error in (
+            ("ios", "success", None),
+            ("android", "success", None),
+            ("ios", "install failure", "iOS agent installation exited with status 7"),
+            ("ios", "startup failure", "iOS agent startup exited with status 8"),
+            ("ios", "startup timeout", "Scenario timed out"),
+        ):
+            with self.subTest(backend=backend, outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                session = Path(directory)
+                ready = session / "agent.ready"
+                foreground = session / "foreground"
+                completed = session / "completed"
+                module = session / "scenario.mjs"
+                module.write_text(f"""
+import assert from 'node:assert/strict';
+import {{ readFileSync, writeFileSync }} from 'node:fs';
+assert.equal(readFileSync({json.dumps(str(foreground))}, 'utf8'), 'app');
+writeFileSync({json.dumps(str(completed))}, 'ok');
+// Test the preparation boundary without connecting to a physical device.
+process.exit(0);
+""")
+                children = []
+                homes = set()
+                launches = []
+
+                def start(command, **kwargs):
+                    if command[1:3] in (["agent", "install"], ["apps", "foreground"]):
+                        home = Path(kwargs["env"]["MOBILECLI_HOME"])
+                        homes.add(home)
+                        self.assertTrue((home / "daemon.sock").exists())
+                        self.assertEqual(command[3:], ["--device", "owned-udid"])
+                        source = "import signal,time\nfrom pathlib import Path\n"
+                        if command[1] == "agent":
+                            source += f"raise SystemExit({7 if outcome == 'install failure' else 0})\n"
+                        elif outcome == "startup failure":
+                            source += "raise SystemExit(8)\n"
+                        elif outcome == "startup timeout":
+                            source += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n"
+                        else:
+                            # DeviceKit startup backgrounds any existing app.
+                            source += (
+                                f"Path({str(foreground)!r}).write_text('agent')\n"
+                                f"Path({str(ready)!r}).touch()\n"
+                            )
+                        command = [sys.executable, "-c", source]
+                    child = popen(command, **kwargs)
+                    children.append(child)
+                    return child
+
+                def launch_app():
+                    self.assertEqual(ready.exists(), backend == "ios")
+                    launches.append("app")
+                    foreground.write_text("app")
+
+                with (
+                    patch("scenario.subprocess.Popen", side_effect=start),
+                    self.assertRaisesRegex(RuntimeError, error) if error else nullcontext(),
+                ):
+                    run_scenario(
+                        module,
+                        serial="owned-udid", device_id="owned-udid", package="test.app",
+                        session=session, timeout=3 if error else 10,
+                        check_running=lambda: None, backend=backend, launch_app=launch_app,
+                    )
+                self.assertEqual(launches, [] if error else ["app"])
+                self.assertEqual(completed.exists(), error is None)
+                self.assertTrue(all(child.poll() is not None for child in children))
+                self.assertTrue(all(not home.exists() for home in homes))
+
+    def test_ios_runner_attaches_without_relaunching_or_using_android_driver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executor = root / "executor.mjs"
+            executor.write_text("""
+import assert from 'node:assert/strict';
+export default async function ({ backend, serial, packageName, screen }) {
+  assert.equal(backend, 'ios');
+  assert.equal(serial, 'owned-udid');
+  assert.equal(packageName, 'test.ios.app');
+  assert.equal(screen.marker, 'attached screen');
+}
+""")
+            script = """
+import assert from 'node:assert/strict';
+import { ios, android } from 'mobilewright';
+import { MobilecliDriver } from '@mobilewright/driver-mobilecli';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
+Object.defineProperty(process, 'platform', { value: 'darwin' });
+let attached = false, closed = false, disposed = false;
+android.launch = async () => { throw new Error('Used Android launcher for iOS'); };
+ios.launch = async (options) => {
+  assert.equal(options.deviceId, 'owned-udid');
+  assert.equal(options.autoAppLaunch, false);
+  assert.equal(options.driver.constructor, NativeIOSDriver);
+  attached = true;
+  return { screen: { marker: 'attached screen' }, close: async () => { closed = true; } };
+};
+MobilecliDriver.prototype.dispose = async () => { disposed = true; };
+process.argv = ['node', 'runner.mjs', process.argv[1], 'owned-udid', 'owned-udid', 'test.ios.app', process.argv[2], 'ios'];
+await import('./runner.mjs');
+assert.ok(attached && closed && disposed);
+"""
+            result = subprocess.run(
+                ["node", "--input-type=module", "-e", script, str(executor), str(root)],
+                cwd=RUNNER.parent, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_native_android_locators_use_accessibility_labels_and_webview_children(self):
         # Exercise the packaged driver through real Mobilewright locators and a
         # subprocess CLI boundary. The device's accessibility service is the fixture.
@@ -1118,6 +1554,95 @@ await assert.rejects(driver.getViewHierarchy(), /DeviceServer JSON hierarchy/);
                 capture_output=True,
                 text=True,
                 timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_native_ios_locators_find_webview_consent_and_tap_in_screen_points(self):
+        # DeviceKit 0.0.33 AX snapshots use numeric elementType and capitalized
+        # frame fields, unlike both its normalized tree and Android raw dumps.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dump = root / "dump.json"
+            binary = root / "mobilecli fixture"
+            node = {
+                "elementType": 9,
+                "label": "",
+                "identifier": "",
+                "frame": {"X": 37.25, "Y": 446.5, "Width": 328.5, "Height": 45.5},
+                "children": [],
+            }
+            tree = {
+                **node,
+                "elementType": 0,
+                "frame": {"X": 0, "Y": 0, "Width": 0, "Height": 0},
+                "children": [
+                    {**node, "label": "BUNTE\nTab 2 of 2", "selected": True},
+                    {
+                        **node,
+                        "elementType": 58,
+                        "children": [
+                            {**node, "label": "Akzeptieren", "identifier": "consent-accept"},
+                            {**node, "label": "Disabled", "enabled": False},
+                            {
+                                **node, "label": "Offscreen",
+                                "frame": {"X": 0, "Y": -100, "Width": 80, "Height": 40},
+                            },
+                        ],
+                    },
+                    {**node, "elementType": 40, "label": "Tracking", "value": "1"},
+                    {
+                        **node, "elementType": 49, "identifier": "search",
+                        "placeholderValue": "Search", "value": "Royals", "hasFocus": True,
+                    },
+                ],
+            }
+            dump.write_text(json.dumps({"status": "ok", "data": {"rawData": tree}}))
+            binary.write_text(
+                f"#!{shutil.which('node')}\n" + """
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[args.indexOf('--device') + 1] !== 'owned-device' ||
+    args[args.indexOf('--format') + 1] !== 'raw') process.exit(1);
+process.stdout.write(fs.readFileSync(__dirname + '/dump.json'));
+"""
+            )
+            binary.chmod(0o700)
+            script = """
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { Screen } from 'mobilewright';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
+const driver = new NativeIOSDriver({
+  deviceId: 'owned-device', mobilecliPath: process.argv[1],
+});
+const screen = new Screen(driver);
+assert.equal(await screen.getByRole('button', { name: /^BUNTE/ }).isVisible(), true);
+assert.equal(await screen.getByRole('button', { name: /^akzeptieren$/i }).isVisible(), true);
+assert.equal(await screen.getByTestId('consent-accept').isVisible(), true);
+assert.equal(await screen.getByText('Offscreen').isVisible(), false);
+await assert.rejects(screen.getByText('Disabled').tap({ timeout: 100 }), /not enabled/);
+assert.equal(await screen.getByRole('switch', { name: 'Tracking' }).isChecked(), true);
+assert.equal(await screen.getByPlaceholder('Search').getValue(), 'Royals');
+const consent = screen.getByText(/^(Akzeptieren|Alle akzeptieren|Zustimmen|Accept all)$/i);
+assert.deepEqual(await consent.boundingBox(), { x: 37.25, y: 446.5, width: 328.5, height: 45.5 });
+let tapped = false;
+driver.tap = async (x, y) => {
+  // Actual AX bounds are points. Do not multiply these by the Retina scale.
+  assert.deepEqual([x, y], [202, 469]);
+  tapped = true;
+  const response = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+  response.data.rawData.children[1].children = [];
+  writeFileSync(process.argv[2], JSON.stringify(response));
+};
+await consent.tap();
+assert.equal(tapped, true);
+await consent.waitFor({ state: 'hidden', timeout: 1000 });
+writeFileSync(process.argv[2], JSON.stringify({ data: { rawData: { elements: [] } } }));
+await assert.rejects(screen.getByText('Akzeptieren').isVisible(), /DeviceKit AX hierarchy/);
+"""
+            result = subprocess.run(
+                ["node", "--input-type=module", "-e", script, str(binary), str(dump)],
+                cwd=RUNNER.parent, capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

@@ -1,8 +1,9 @@
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { android, expect } from 'mobilewright';
+import { android, ios, expect } from 'mobilewright';
 import { MobilecliDriver, resolveMobilecliBinary } from '@mobilewright/driver-mobilecli';
 import { NativeAndroidDriver } from './native-android-driver.mjs';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 12)) {
@@ -12,7 +13,10 @@ if (major < 22 || (major === 22 && minor < 12)) {
 if (process.argv[2] === '--check') {
   console.log(resolveMobilecliBinary());
 } else {
-  const [filename, serial, deviceId, packageName, sessionDirectory] = process.argv.slice(2);
+  const [filename, serial, deviceId, packageName, sessionDirectory, backend = 'android'] = process.argv.slice(2);
+  if (!['android', 'ios'].includes(backend)) {
+    throw new Error(`Unsupported backend: ${backend}`);
+  }
   const { default: scenario } = await import(pathToFileURL(filename).href);
   if (typeof scenario !== 'function') {
     throw new Error('Scenario must export default async function (context).');
@@ -29,12 +33,14 @@ if (process.argv[2] === '--check') {
     reservation.close((error) => (error ? reject(error) : resolve()));
   });
   const url = `ws://127.0.0.1:${port}/ws`;
-  const driver = process.platform === 'darwin'
-    ? new NativeAndroidDriver({ url, deviceId })
-    : new MobilecliDriver({ url });
+  const driver = backend === 'ios'
+    ? new NativeIOSDriver({ url, deviceId })
+    : process.platform === 'darwin'
+      ? new NativeAndroidDriver({ url, deviceId })
+      : new MobilecliDriver({ url });
   let device;
   try {
-    device = await android.launch({
+    device = await (backend === 'ios' ? ios : android).launch({
       driver,
       deviceId,
       // The audit already launched the app after installing its capture CA.
@@ -44,7 +50,7 @@ if (process.argv[2] === '--check') {
       expectTimeout: 30_000,
     });
     console.log(`Scenario started: ${filename} on ${serial}`);
-    await scenario({ device, screen: device.screen, expect, serial, packageName, sessionDirectory });
+    await scenario({ device, screen: device.screen, expect, serial, packageName, sessionDirectory, backend });
     console.log('Scenario completed');
   } finally {
     try {

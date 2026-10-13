@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import chdir, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import chdir, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from itertools import product
@@ -1079,9 +1079,10 @@ class IOSBackendTest(unittest.TestCase):
                         return child
                     return popen(command, **kwargs)
 
-                def execute(_path, *, backend, serial, device_id, package, check_running, **_kwargs):
+                def execute(_path, *, backend, serial, device_id, package, check_running, launch_app, **_kwargs):
                     self.assertEqual((backend, serial, device_id, package), ("ios", owned, owned, "test.ios.app"))
                     check_running()
+                    launch_app()
                     if outcome == "scenario":
                         raise RuntimeError("fixture scenario failure")
                     if outcome == "interrupt":
@@ -1201,7 +1202,8 @@ class ScenarioAuditTest(unittest.TestCase):
                         ]
                     )
 
-                    def execute(*_args, **_kwargs):
+                    def execute(*_args, launch_app, **_kwargs):
+                        launch_app()
                         # Use the proxy port handed to the emulator boundary.
                         port = emulator.call_args.args[2]
                         for host in ("localhost", "127.0.0.1"):
@@ -1295,7 +1297,8 @@ class ScenarioAuditTest(unittest.TestCase):
                     ]
                 )
 
-                def execute(path, *, session, **_kwargs):
+                def execute(path, *, session, launch_app, **_kwargs):
+                    launch_app()
                     (session / "scenario.log").write_text(path.read_text())
                     if outcome:
                         raise outcome
@@ -1332,6 +1335,79 @@ class ScenarioAuditTest(unittest.TestCase):
 
 
 class ScenarioProcessTest(unittest.TestCase):
+    def test_ios_preparation_preserves_first_app_launch_and_bounds_failures(self):
+        # Real private daemon, runner and process cleanup; only the device-side
+        # install/start commands are fixtures. Native acceptance covers DeviceKit.
+        popen = subprocess.Popen
+        for backend, outcome, error in (
+            ("ios", "success", None),
+            ("android", "success", None),
+            ("ios", "install failure", "iOS agent installation exited with status 7"),
+            ("ios", "startup failure", "iOS agent startup exited with status 8"),
+            ("ios", "startup timeout", "Scenario timed out"),
+        ):
+            with self.subTest(backend=backend, outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                session = Path(directory)
+                ready = session / "agent.ready"
+                foreground = session / "foreground"
+                completed = session / "completed"
+                module = session / "scenario.mjs"
+                module.write_text(f"""
+import assert from 'node:assert/strict';
+import {{ readFileSync, writeFileSync }} from 'node:fs';
+assert.equal(readFileSync({json.dumps(str(foreground))}, 'utf8'), 'app');
+writeFileSync({json.dumps(str(completed))}, 'ok');
+// Test the preparation boundary without connecting to a physical device.
+process.exit(0);
+""")
+                children = []
+                homes = set()
+                launches = []
+
+                def start(command, **kwargs):
+                    if command[1:3] in (["agent", "install"], ["apps", "foreground"]):
+                        home = Path(kwargs["env"]["MOBILECLI_HOME"])
+                        homes.add(home)
+                        self.assertTrue((home / "daemon.sock").exists())
+                        self.assertEqual(command[3:], ["--device", "owned-udid"])
+                        source = "import signal,time\nfrom pathlib import Path\n"
+                        if command[1] == "agent":
+                            source += f"raise SystemExit({7 if outcome == 'install failure' else 0})\n"
+                        elif outcome == "startup failure":
+                            source += "raise SystemExit(8)\n"
+                        elif outcome == "startup timeout":
+                            source += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n"
+                        else:
+                            # DeviceKit startup backgrounds any existing app.
+                            source += (
+                                f"Path({str(foreground)!r}).write_text('agent')\n"
+                                f"Path({str(ready)!r}).touch()\n"
+                            )
+                        command = [sys.executable, "-c", source]
+                    child = popen(command, **kwargs)
+                    children.append(child)
+                    return child
+
+                def launch_app():
+                    self.assertEqual(ready.exists(), backend == "ios")
+                    launches.append("app")
+                    foreground.write_text("app")
+
+                with (
+                    patch("scenario.subprocess.Popen", side_effect=start),
+                    self.assertRaisesRegex(RuntimeError, error) if error else nullcontext(),
+                ):
+                    run_scenario(
+                        module,
+                        serial="owned-udid", device_id="owned-udid", package="test.app",
+                        session=session, timeout=3 if error else 10,
+                        check_running=lambda: None, backend=backend, launch_app=launch_app,
+                    )
+                self.assertEqual(launches, [] if error else ["app"])
+                self.assertEqual(completed.exists(), error is None)
+                self.assertTrue(all(child.poll() is not None for child in children))
+                self.assertTrue(all(not home.exists() for home in homes))
+
     def test_ios_runner_attaches_without_relaunching_or_using_android_driver(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

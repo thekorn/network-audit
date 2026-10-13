@@ -392,15 +392,18 @@ def audit(args):
                     )
                     recording.start()
                     print("Recording the device screen (no audio).", flush=True)
-                device.launch(artifact, package, activity)
-                if emulator:
-                    wait_for(
-                        lambda: emulator.foreground(package),
-                        "app in foreground",
-                        timeout=30,
-                    )
-                metadata["state"] = "capturing"
-                save()
+
+                def launch_app():
+                    device.launch(artifact, package, activity)
+                    if emulator:
+                        foreground = emulator.foreground
+                        wait_for(
+                            lambda: foreground(package),
+                            "app in foreground",
+                            timeout=30,
+                        )
+                    metadata["state"] = "capturing"
+                    save()
 
                 def device_running():
                     if simulator:
@@ -435,9 +438,11 @@ def audit(args):
                         timeout=args.scenario_timeout,
                         check_running=check_running,
                         backend=args.backend,
+                        launch_app=launch_app,
                     )
                     metadata["state"] = "scenario completed"
                 else:
+                    launch_app()
                     print(
                         f"App running on {device.serial}. " + (
                             "Press Ctrl+C to finish." if is_ios else

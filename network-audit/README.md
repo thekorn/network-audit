@@ -10,11 +10,12 @@ The Android workflow in the remaining sections is unchanged except where noted.
 
 ## Experimental iOS Simulator backend
 
-**Implemented but not natively verified.** Neither an Amp orb nor the Linux
-`thekorn-amp-runner` can build or run iOS Simulator. The automated Linux tests
+**Product capture and recording verified on Apple Silicon with iOS 27 Simulator.**
+Neither an Amp orb nor the Linux `thekorn-amp-runner` can build or run iOS Simulator.
+The automated Linux tests
 exercise CLI selection, platform validation, build arguments, lifecycle,
 recording signals, report preservation and scenario routing through substituted
-Xcode/device boundaries. They do not prove iOS traffic interception works.
+Xcode/device boundaries; native coverage and remaining limits are listed below.
 
 On an Apple Silicon Mac, install full Xcode, accept its license, complete its
 first-launch setup and install an iOS Simulator runtime in Xcode Settings.
@@ -126,17 +127,22 @@ capture: `simctl` does not provide the Android foreground-activity API used by
 `--scenario` attaches Mobilewright's iOS driver to the owned UDID without
 relaunching the app. The same executor context is available, with `backend`
 equal to `ios`, `serial`/`device.id` equal to the UDID, and `packageName` equal to
-the bundle identifier. Mobilecli installs its Simulator DeviceKit helper as
-needed; no real-device provisioning profile is required. iOS selectors and
-Flutter/WebView accessibility still need native validation; Android-only
-executors and their `dimensions` settings are not automatically converted.
+the bundle identifier. Before launching the app, the audit uses its private
+Mobilecli daemon to install and start the Simulator DeviceKit helper. This
+avoids Mobilewright 0.0.64's failing missing-agent check and prevents the helper
+from backgrounding an already-launched app. Mobilecli downloads its pinned helper
+when needed; no real-device provisioning profile is required. Helper preparation
+uses the scenario timeout and cleanup. Android-only executors and their
+`dimensions` settings are not automatically converted; WebView accessibility
+still needs separate native validation.
 
 `--record` uses `simctl io <UDID> recordVideo --codec=h264`. SIGINT finalizes the
-silent MP4 before shutdown. Only a successful recorder exit and nonempty output
-produce `recording.mp4`; failures retain `recording.partial.mp4` when available
-and still generate the network report. Native recording is also unverified.
+silent MP4 before shutdown. Startup waits for simctl's first-frame acknowledgement,
+not an MP4 write: the video can remain buffered until stopping. Only a successful
+recorder exit and nonempty output produce `recording.mp4`; failures retain
+`recording.partial.mp4` when available and still generate the network report.
 
-### Pending Mac acceptance
+### Mac acceptance and remaining checks
 
 The sample now includes a generated iOS platform and a product-only scenario:
 
@@ -146,12 +152,16 @@ devenv shell audit sample-app --backend=ios \
 ```
 
 The scenario requires all ten successful product HTTPS responses **in the
-capture**, not only a successful UI. On the future Mac runner, verify this run,
-play the MP4, then repeat manually and end with Ctrl+C. Also test prebuilt
-Simulator `.app` input, a scenario failure/timeout, denied redirector approval,
-CA trust failures and simulator boot failure. Check the report and confirm the
-owned device/proxy are removed while an unrelated booted Simulator stays intact.
-Investigate WKWebView/helper attribution separately before widening capture.
+capture**, not only a successful UI. This command completed on an Apple Silicon
+Mac with iOS 27, capturing exactly ten successful product GETs from one app
+launch. The inspected MP4 shows the Products screen with `10 / 10 loaded · 0 failed`.
+Manual headless captures with and without recording also completed on Ctrl+C,
+with reports preserved and the owned Simulator removed.
+
+Remaining native checks include prebuilt Simulator `.app` input, scenario timeout,
+denied redirector approval, CA trust failures, simulator boot failure and cleanup
+with an unrelated Simulator already booted. Investigate WKWebView/helper
+attribution separately before widening capture.
 
 ## Run
 
@@ -465,7 +475,8 @@ or by its loopback TCP serial on macOS.
 A scenario's completion ends capture automatically;
 `--close-grace` does not apply in scenario mode, so system dialogs or temporary
 app switches do not end an automated run. The timeout defaults to 300 seconds
-starting after app launch, including module loading and Mobilewright connection.
+starting with scenario setup, including iOS helper preparation, app launch,
+module loading and Mobilewright connection.
 There is no implicit delay after completion: await any desired capture window
 in the scenario itself.
 

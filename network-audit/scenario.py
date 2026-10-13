@@ -97,7 +97,8 @@ def stop_group(process, grace=5):
 
 
 def run_scenario(
-    path, *, serial, device_id, package, session, timeout, check_running, backend="android"
+    path, *, serial, device_id, package, session, timeout, check_running,
+    backend="android", launch_app=None,
 ):
     deadline = time.monotonic() + timeout
     binary = subprocess.run(
@@ -136,19 +137,11 @@ def run_scenario(
             check()
             return (Path(home) / "daemon.sock").exists()
 
-        try:
-            wait_for(daemon_ready, "Mobilecli daemon", timeout=min(timeout, 10))
+        def execute(command, description):
+            nonlocal process
+            check()
             process = subprocess.Popen(
-                [
-                    "node",
-                    str(RUNNER),
-                    str(path),
-                    serial,
-                    device_id,
-                    package,
-                    str(session),
-                    backend,
-                ],
+                command,
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -160,10 +153,36 @@ def run_scenario(
                 if status is not None:
                     if status != 0:
                         raise RuntimeError(
-                            f"Scenario exited with status {status}; see scenario.log"
+                            f"{description} exited with status {status}; see scenario.log"
                         )
                     return
                 time.sleep(0.2)
+
+        try:
+            wait_for(daemon_ready, "Mobilecli daemon", timeout=min(timeout, 10))
+            if backend == "ios":
+                # Mobilewright 0.0.64 throws on a missing agent's status exit
+                # before reaching its auto-install branch. Use the pinned CLI.
+                execute(
+                    [binary, "agent", "install", "--device", device_id],
+                    "iOS agent installation",
+                )
+                # This starts DeviceKit lazily. Starting it after our app would
+                # background that app; do it under our private daemon first.
+                execute(
+                    [binary, "apps", "foreground", "--device", device_id],
+                    "iOS agent startup",
+                )
+            if launch_app is not None:
+                check()
+                launch_app()
+            execute(
+                [
+                    "node", str(RUNNER), str(path), serial, device_id,
+                    package, str(session), backend,
+                ],
+                "Scenario",
+            )
         finally:
             # Ignore repeated interrupts until both owned process groups stop.
             previous = {

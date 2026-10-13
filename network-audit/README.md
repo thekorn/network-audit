@@ -78,8 +78,10 @@ network-audit MyApp.app --backend=ios --domain api.example.com \
 ```
 
 Those identifiers are examples; select identifiers present on your Mac.
-`--dimensions` and scenario `dimensions` are rejected for iOS: Simulator sizes
-belong to device types, not arbitrary width/height/density settings.
+`--dimensions` and scenario `dimensions` are ignored with a warning on iOS,
+so the same scenario can keep its Android display settings. Values must still
+pass normal CLI/schema validation. Simulator sizes belong to device types, not
+arbitrary width/height/density settings; use `--ios-device-type` to select one.
 
 ### Capture scope and host permissions
 
@@ -330,12 +332,14 @@ optional; when present, it must be a non-empty list of hostnames. The optional
 The optional `flavor` selects a [Flutter build flavor](#flutter-flavors).
 Unknown fields are rejected so a typo cannot silently turn off filtering.
 
-The optional `dimensions` sets the disposable emulator's display **before boot**,
-so both the app and executor start with the requested size. `width` and `height`
-are pixels, and `density` is dpi. All three are required positive integers;
+The optional `dimensions` sets the disposable Android emulator's display
+**before boot**, so both the app and executor start with the requested size.
+`width` and `height` are pixels, and `density` is dpi. All three are required positive integers;
 the emulator requires an even width. Dimensions work with both windowed and
-`--headless` runs and do not change any existing AVD. A regular TOML table is
-equivalent to the inline form above:
+`--headless` runs and do not change any existing AVD. On iOS, scenario dimensions
+and `--dimensions` are ignored with a warning; select the display with
+`--ios-device-type` instead. A regular TOML table is equivalent to the inline
+form above:
 
 ```toml
 executor = "browse.mjs"
@@ -366,8 +370,8 @@ network-audit sample-app --scenario sample-app/scenarios/browse.toml --dimension
 
 `--dimensions` accepts **only shortcut names**, not custom sizes or tables, and
 **replaces** the scenario's `dimensions`. The scenario field must still be valid
-even when overridden. Explicit custom dimensions remain available in TOML.
-Omit both the field and the flag to keep the emulator defaults.
+even when overridden or ignored on iOS. Explicit custom dimensions remain
+available in TOML. Omit both the field and the flag to keep the emulator defaults.
 
 To capture all HTTP(S) requests reaching the proxy, omit `domains` entirely:
 

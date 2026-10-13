@@ -21,7 +21,7 @@
       "pattern": "\\S"
     },
     "dimensions": {
-      "description": "Emulator display shortcut (big: 1280x2856 at 480 dpi) or explicit width and height in pixels and density in dpi. CLI --dimensions replaces this default. Omit both to keep the emulator defaults.",
+      "description": "Android emulator display shortcut (big: 1280x2856 at 480 dpi) or explicit width and height in pixels and density in dpi. CLI --dimensions replaces this default. On iOS, both settings are ignored with a warning; use --ios-device-type to select the display. Values must still pass schema validation on all backends. Omit both to keep the emulator defaults.",
       "if": { "type": "string" },
       "then": { "enum": ["big"] },
       "else": {

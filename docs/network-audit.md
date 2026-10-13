@@ -223,6 +223,11 @@ executor = "browse.mjs"
 dimensions = { width = 1280, height = 2856, density = 480 }
 ```
 
+Dimensions configure Android only. On iOS, scenario `dimensions` and CLI
+`--dimensions` are ignored with a warning, so shared scenarios can keep their
+Android settings. Values must still pass normal CLI/schema validation; choose
+the iOS Simulator display with `--ios-device-type` instead.
+
 The [executor](../sample-app/scenarios/browse.mjs) waits for the first product
 batch, scrolls the feed, runs a second batch, opens BUNTE, accepts consent,
 declines the optional push-notification prompt if it appears, scrolls the WebView,

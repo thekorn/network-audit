@@ -192,8 +192,8 @@ and `dimensions` are optional, and unknown fields are rejected. Omit `domains`
 to capture all HTTP(S) requests reaching the proxy across the dedicated emulator;
 an explicitly empty list is invalid.
 
-`dimensions` configures the fresh emulator before boot: width and height are
-pixels, density is dpi. All three values are required positive integers, and
+`dimensions` configures the fresh Android emulator before boot: width and height
+are pixels, density is dpi. All three values are required positive integers, and
 width must be even. Alternatively, set `dimensions = "big"` for the predefined
 `{ width = 1280, height = 2856, density = 480 }` size. `big` is currently the only
 shortcut, and names are case-sensitive.
@@ -201,7 +201,9 @@ shortcut, and names are case-sensitive.
 For manual or scenario runs, `--dimensions big` overrides the scenario's
 dimensions. The flag accepts only shortcut names; custom sizes require TOML.
 Omit both to keep the emulator defaults. Dimensions apply to both windowed and
-headless runs without changing any existing AVD.
+headless Android runs without changing any existing AVD. On iOS, `dimensions`
+and `--dimensions` are ignored with a warning; use `--ios-device-type` to choose
+the Simulator display. Values must still pass normal CLI/schema validation.
 
 For Flutter builds, a scenario can set `env-file = "../config/dev.json"` (or a
 `.env` file), resolved relative to the TOML file. This replaces the need to pass

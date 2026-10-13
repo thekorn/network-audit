@@ -82,7 +82,7 @@ def parser():
     result.add_argument(
         "--dimensions",
         choices=DIMENSION_SHORTCUTS,
-        help="Android display shortcut; overrides scenario dimensions (not supported on iOS)",
+        help="Android display shortcut; overrides scenario dimensions (ignored with a warning on iOS)",
     )
     result.add_argument(
         "--record",
@@ -161,9 +161,12 @@ def audit(args):
     if args.dimensions is not None:
         dimensions = DIMENSION_SHORTCUTS[args.dimensions].copy()
     if is_ios and dimensions is not None:
-        raise ValueError(
-            "dimensions are Android-only; use --ios-device-type to select an iOS display"
+        print(
+            "Warning: dimensions are ignored on iOS; use --ios-device-type to select an iOS display.",
+            file=sys.stderr,
+            flush=True,
         )
+        dimensions = None
     if args.flavor is not None:
         flavor = args.flavor
     if flavor is not None:

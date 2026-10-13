@@ -679,7 +679,8 @@ class AuditSessionTest(unittest.TestCase):
                     config.write_text(
                         f'executor = "executor.mjs"\ndimensions = {definition}\n'
                     )
-                    for override in (None, "big"):
+                    for backend, override in product(("android", "ios"), (None, "big")):
+                        args.backend = backend
                         args.dimensions = override
                         with self.assertRaisesRegex(ValueError, message):
                             audit(args)
@@ -899,7 +900,6 @@ class IOSBackendTest(unittest.TestCase):
                 (apk, ["--backend=ios"], ValueError, "not an IPA/APK"),
                 (device_app, ["--backend=ios"], ValueError, "not a physical iOS device"),
                 (invalid_app, ["--backend=ios"], ValueError, "Cannot read Simulator app Info.plist"),
-                (app, ["--backend=ios", "--dimensions=big"], ValueError, "Android-only"),
                 (app, ["--backend=ios", "--flavor=stage"], ValueError, "requires a Flutter project"),
                 (app, ["--backend=ios", "--dart-define-from-file=x.json"], ValueError, "requires a Flutter project"),
                 (apk, ["--ios-runtime=test"], ValueError, "require --backend=ios"),
@@ -1010,16 +1010,28 @@ class IOSBackendTest(unittest.TestCase):
         owned = "E83EA845-AD13-43CC-BCAD-B56C379847CA"
         other = "9B2D97C0-BB1E-4087-BFAB-60008CE7F0C8"
         popen = subprocess.Popen
-        for outcome in (
+        outcomes = (
             "completed", "create", "boot", "keychain", "install", "launch",
             "scenario", "interrupt", "proxy", "shutdown", "launch and shutdown",
             "manual interrupt", "manual shutdown",
-        ):
-            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+        )
+        table = "dimensions = { width = 720, height = 1600, density = 240 }"
+        cases = [(outcome, "", None) for outcome in outcomes] + [
+            ("completed", table, None),
+            ("completed", 'dimensions = "big"', None),
+            ("completed", "", "big"),
+            ("completed", table, "big"),
+            ("manual shutdown", "", "big"),
+        ]
+        for outcome, definition, shortcut in cases:
+            with (
+                self.subTest(outcome=outcome, dimensions=definition, shortcut=shortcut),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 app = self.bundle(root)
                 scenario = root / "scenario.toml"
-                scenario.write_text('executor = "executor.mjs"\n')
+                scenario.write_text(f'executor = "executor.mjs"\n{definition}\n')
                 (root / "executor.mjs").write_text("export default async function () {}\n")
                 devices = {other: "Booted"}
                 names = {other: "Unrelated"}
@@ -1096,11 +1108,12 @@ class IOSBackendTest(unittest.TestCase):
                     patch("cli.run_scenario", side_effect=execute),
                     patch("cli.shutil.which", side_effect=lambda name: None if name in ("adb", "emulator", "flutter", "fvm") else "available"),
                     redirect_stdout(StringIO()),
-                    redirect_stderr(StringIO()),
+                    redirect_stderr(StringIO()) as errors,
                 ):
                     args = parser().parse_args([
                         str(app), "--backend=ios", "--use-fvm", "--headless",
                         *(["--domain=example.test"] if outcome.startswith("manual") else ["--scenario", str(scenario)]),
+                        *(["--dimensions", shortcut] if shortcut else []),
                         "--output", str(root / "runs"),
                     ])
                     if outcome == "completed" or outcome.startswith("manual"):
@@ -1110,12 +1123,18 @@ class IOSBackendTest(unittest.TestCase):
                     else:
                         with self.assertRaises(RuntimeError):
                             audit(args)
+                self.assertEqual(
+                    errors.getvalue().count("dimensions are ignored on iOS"),
+                    1 if definition or shortcut else 0,
+                )
                 self.assertEqual(devices, {other: "Booted"})
                 self.assertTrue(all(child.poll() is not None for child in children))
                 (session,) = (root / "runs").iterdir()
                 metadata = json.loads((session / "session.json").read_text())
                 self.assertEqual(metadata["backend"], "ios")
                 self.assertEqual(metadata["device"], owned)
+                if definition or shortcut:
+                    self.assertEqual(metadata["ios_device_type"], "phone")
                 self.assertEqual(metadata["state"], {
                     "completed": "scenario completed", "interrupt": "interrupted by user",
                     "manual interrupt": "interrupted by user", "manual shutdown": "simulator closed",

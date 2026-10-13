@@ -41,10 +41,22 @@ in
       pkgs.pyright
       pkgs.openssl
       pkgs.nodejs_24
+      pkgs.zig_0_17
     ];
 
     scripts.network-audit.exec = ''
       exec ${python}/bin/python3 ${lib.escapeShellArg "${config.devenv.root}/network-audit/cli.py"} "$@"
+    '';
+
+    scripts.network-audit-zig.exec = ''
+      set -euo pipefail
+      # Build in a subshell, then exec from the caller's original directory so
+      # app/config/output paths and foreground signals retain their meaning.
+      (
+        cd ${lib.escapeShellArg "${config.devenv.root}/network-audit-zig"}
+        zig build -Doptimize=ReleaseSafe
+      )
+      exec ${lib.escapeShellArg "${config.devenv.root}/network-audit-zig/zig-out/bin/network-audit-zig"} "$@"
     '';
 
     # Keep the audit in the foreground: oneshot tasks have a five-second
@@ -66,12 +78,19 @@ in
       exec devenv shell -O androidEmulator.enable:bool true -- network-audit "$@"
     '';
 
+    scripts.audit-zig.exec = ''
+      exec devenv shell -O androidEmulator.enable:bool true -- network-audit-zig "$@"
+    '';
+
     env = toolchain.env // {
       DEVENV_TOOLBOX = "network-audit";
       PUB_CACHE = "${config.devenv.state}/pub-cache";
       GRADLE_USER_HOME = "${config.devenv.state}/gradle";
       NETWORK_AUDIT_DEVENV = config.devenv.root;
       NETWORK_AUDIT_SCENARIO_RUNNER = "${mobilewright}/runner.mjs";
+      NETWORK_AUDIT_ASSETS = "${config.devenv.root}/network-audit";
+      NETWORK_AUDIT_ZIG_CONFIG = "${config.devenv.root}/network-audit-zig/scenario_config.py";
+      NETWORK_AUDIT_PYTHON = "${python}/bin/python3";
     };
 
     # Named tasks expose each result in devenv's test output. Keep successful
@@ -97,6 +116,8 @@ in
             node --version
             node "$NETWORK_AUDIT_SCENARIO_RUNNER" --check
             network-audit --help
+            zig version
+            network-audit-zig --help
           '';
 
           "test:android-sdk".exec = ''
@@ -124,6 +145,19 @@ in
           "test:python" = {
             exec = "python3 -m unittest discover -s network-audit/tests -v";
             showOutput = true;
+          };
+
+          "test:zig" = {
+            exec = ''
+              set -euo pipefail
+              zig fmt --check build.zig src
+              zig build test --summary all
+              zig build -Doptimize=ReleaseSafe
+              python3 -m unittest discover -s tests -v
+            '';
+            cwd = "${config.devenv.root}/network-audit-zig";
+            showOutput = true;
+            after = [ "test:toolchain@completed" ];
           };
 
           "test:flutter-analyze" = {

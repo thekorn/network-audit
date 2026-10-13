@@ -1,9 +1,28 @@
 # network-audit
 
-Capture Android HTTP(S) traffic with mitmproxy and generate an offline HTML report.
+Capture Android or iOS Simulator HTTP(S) traffic with mitmproxy and generate an offline HTML report.
 Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
-sends ten GET requests per batch and an Android WebView loading BUNTE.
+sends ten GET requests per batch and a WebView loading BUNTE.
+
+Android remains the default (`--backend=android`). **Experimental iOS support**
+uses `--backend=ios` on a Mac with full Xcode and an installed iOS runtime:
+
+```bash
+network-audit /path/to/flutter-project --backend=ios --domain api.example.com
+network-audit /path/to/SimulatorBuild.app --backend=ios --domain api.example.com
+# In this checkout, without enabling the Android emulator:
+devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/products-ios.toml
+```
+
+iOS uses mitmproxy's macOS local-capture extension rather than changing the
+Mac's HTTP proxy settings. It requires user approval on first use. Capture is
+scoped to executable paths inside the disposable Simulator; shared WebKit and
+system networking helpers are **not included**. Native iOS builds, capture,
+recording and the product/browse scenarios have been verified on Apple Silicon
+with iOS 27 Simulator; Linux tests use substituted platform boundaries.
+See [iOS prerequisites, limits and remaining
+acceptance checks](network-audit/README.md#experimental-ios-simulator-backend).
 
 Start with [What does your Android app actually send?](docs/network-audit.md),
 a Nix-first walkthrough using the sample app, screenshots, and a short recording.
@@ -174,8 +193,8 @@ and `dimensions` are optional, and unknown fields are rejected. Omit `domains`
 to capture all HTTP(S) requests reaching the proxy across the dedicated emulator;
 an explicitly empty list is invalid.
 
-`dimensions` configures the fresh emulator before boot: width and height are
-pixels, density is dpi. All three values are required positive integers, and
+`dimensions` configures the fresh Android emulator before boot: width and height
+are pixels, density is dpi. All three values are required positive integers, and
 width must be even. Alternatively, set `dimensions = "big"` for the predefined
 `{ width = 1280, height = 2856, density = 480 }` size. `big` is currently the only
 shortcut, and names are case-sensitive.
@@ -183,7 +202,9 @@ shortcut, and names are case-sensitive.
 For manual or scenario runs, `--dimensions big` overrides the scenario's
 dimensions. The flag accepts only shortcut names; custom sizes require TOML.
 Omit both to keep the emulator defaults. Dimensions apply to both windowed and
-headless runs without changing any existing AVD.
+headless Android runs without changing any existing AVD. On iOS, `dimensions`
+and `--dimensions` are ignored with a warning; use `--ios-device-type` to choose
+the Simulator display. Values must still pass normal CLI/schema validation.
 
 For Flutter builds, a scenario can set `env-file = "../config/dev.json"` (or a
 `.env` file), resolved relative to the TOML file. This replaces the need to pass
@@ -196,8 +217,12 @@ move to TOML entry points, its JavaScript executor was verified on an Apple
 Silicon Mac with a fresh Android 36 emulator, including twenty successful
 product GETs (two per product). macOS uses loopback
 TCP for ADB and native Android accessibility instead of Mobilecli's Flutter tree,
-which omits WebView consent controls. The Linux path is unchanged and was not
-retested with this macOS fix. Failures still produce a partial report.
+which omits WebView consent controls. iOS likewise uses native DeviceKit
+accessibility, including WKWebView children: the unchanged browse scenario
+completed with consent dismissed on iOS 27 in both windowed and headless runs.
+This verifies UI automation, not capture of shared WebKit helper traffic.
+The Linux path is unchanged and was not retested with this macOS fix.
+Failures still produce a partial report.
 Use `--headless` to hide the emulator window. Executors are trusted local `.js`
 or `.mjs` code; see [scenario usage and failure handling](network-audit/README.md#experimental-mobilewright-scenarios).
 

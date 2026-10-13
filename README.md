@@ -3,7 +3,7 @@
 Capture Android or iOS Simulator HTTP(S) traffic with mitmproxy and generate an offline HTML report.
 Built with Nix and [devenv](https://devenv.sh).
 The [sample app](sample-app/README.md) has a native DummyJSON product feed that
-sends ten GET requests per batch and an Android WebView loading BUNTE.
+sends ten GET requests per batch and a WebView loading BUNTE.
 
 Android remains the default (`--backend=android`). **Experimental iOS support**
 uses `--backend=ios` on a Mac with full Xcode and an installed iOS runtime:
@@ -19,8 +19,9 @@ iOS uses mitmproxy's macOS local-capture extension rather than changing the
 Mac's HTTP proxy settings. It requires user approval on first use. Capture is
 scoped to executable paths inside the disposable Simulator; shared WebKit and
 system networking helpers are **not included**. Native iOS builds, capture,
-recording and scenarios have **not been verified on a Mac** yet; Linux tests use
-substituted platform boundaries. See [iOS prerequisites, limits and pending
+recording and the product/browse scenarios have been verified on Apple Silicon
+with iOS 27 Simulator; Linux tests use substituted platform boundaries.
+See [iOS prerequisites, limits and remaining
 acceptance checks](network-audit/README.md#experimental-ios-simulator-backend).
 
 Start with [What does your Android app actually send?](docs/network-audit.md),
@@ -216,8 +217,12 @@ move to TOML entry points, its JavaScript executor was verified on an Apple
 Silicon Mac with a fresh Android 36 emulator, including twenty successful
 product GETs (two per product). macOS uses loopback
 TCP for ADB and native Android accessibility instead of Mobilecli's Flutter tree,
-which omits WebView consent controls. The Linux path is unchanged and was not
-retested with this macOS fix. Failures still produce a partial report.
+which omits WebView consent controls. iOS likewise uses native DeviceKit
+accessibility, including WKWebView children: the unchanged browse scenario
+completed with consent dismissed on iOS 27 in both windowed and headless runs.
+This verifies UI automation, not capture of shared WebKit helper traffic.
+The Linux path is unchanged and was not retested with this macOS fix.
+Failures still produce a partial report.
 Use `--headless` to hide the emulator window. Executors are trusted local `.js`
 or `.mjs` code; see [scenario usage and failure handling](network-audit/README.md#experimental-mobilewright-scenarios).
 

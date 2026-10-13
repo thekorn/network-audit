@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { android, ios, expect } from 'mobilewright';
 import { MobilecliDriver, resolveMobilecliBinary } from '@mobilewright/driver-mobilecli';
 import { NativeAndroidDriver } from './native-android-driver.mjs';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 12)) {
@@ -32,9 +33,11 @@ if (process.argv[2] === '--check') {
     reservation.close((error) => (error ? reject(error) : resolve()));
   });
   const url = `ws://127.0.0.1:${port}/ws`;
-  const driver = backend === 'android' && process.platform === 'darwin'
-    ? new NativeAndroidDriver({ url, deviceId })
-    : new MobilecliDriver({ url });
+  const driver = backend === 'ios'
+    ? new NativeIOSDriver({ url, deviceId })
+    : process.platform === 'darwin'
+      ? new NativeAndroidDriver({ url, deviceId })
+      : new MobilecliDriver({ url });
   let device;
   try {
     device = await (backend === 'ios' ? ios : android).launch({

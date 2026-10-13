@@ -134,9 +134,11 @@ Mobilecli daemon to install and start the Simulator DeviceKit helper. This
 avoids Mobilewright 0.0.64's failing missing-agent check and prevents the helper
 from backgrounding an already-launched app. Mobilecli downloads its pinned helper
 when needed; no real-device provisioning profile is required. Helper preparation
-uses the scenario timeout and cleanup. Android-only executors and their
-`dimensions` settings are not automatically converted; WebView accessibility
-still needs separate native validation.
+uses the scenario timeout and cleanup. Android-only executor APIs are not
+automatically converted; Android `dimensions` settings are ignored with a warning.
+Native selectors read DeviceKit accessibility, including embedded WKWebView
+controls, rather than Mobilecli's Flutter-only render tree. Flutter-only widget
+keys are not available through this native tree.
 
 `--record` uses `simctl io <UDID> recordVideo --codec=h264`. SIGINT finalizes the
 silent MP4 before shutdown. Startup waits for simctl's first-frame acknowledgement,
@@ -160,10 +162,17 @@ launch. The inspected MP4 shows the Products screen with `10 / 10 loaded · 0 fa
 Manual headless captures with and without recording also completed on Ctrl+C,
 with reports preserved and the owned Simulator removed.
 
+The unchanged `browse.toml` scenario also completed on fresh iOS 27 Simulators
+in windowed and headless recorded runs: both product batches loaded, BUNTE
+consent was dismissed, and execution reached the final WebView swipes and wait.
+Each captured twenty successful product GETs; recordings show BUNTE content
+after consent. Only the owned Simulator was removed; two unrelated booted
+Simulators were preserved. This verifies WebView UI automation, not capture of
+shared WebKit helper traffic.
+
 Remaining native checks include prebuilt Simulator `.app` input, scenario timeout,
-denied redirector approval, CA trust failures, simulator boot failure and cleanup
-with an unrelated Simulator already booted. Investigate WKWebView/helper
-attribution separately before widening capture.
+denied redirector approval, CA trust failures and simulator boot failure.
+Investigate WKWebView/helper attribution separately before widening capture.
 
 ## Run
 
@@ -569,11 +578,13 @@ does not build a custom helper or fork Mobilecli to bypass this limitation.
 
 Mobilecli's Flutter VM render-tree mode does not merge WebView accessibility
 nodes and can expose offscreen Flutter widgets as actionable. On macOS the runner
-therefore reads Mobilecli's raw Android DeviceServer hierarchy for every native
-locator, preserving WebView children, accessibility labels and resource IDs.
+therefore reads Mobilecli's raw native hierarchy for every native locator:
+DeviceServer on Android and DeviceKit AX snapshots on iOS. The adapters preserve
+WebView children, accessibility labels and identifiers. iOS AX frames and taps
+use logical screen points, without a Retina pixel-scale conversion.
 Use those native selectors rather than Flutter-only widget keys on macOS.
-The adapter reuses the run's private Mobilecli daemon and fails explicitly if
-the native JSON hierarchy is unavailable; it does not fall back to Flutter or
+The adapters reuse the run's private Mobilecli daemon and fail explicitly if
+the native JSON hierarchy is unavailable; they do not fall back to Flutter or
 hard-coded coordinate taps. Linux keeps Mobilewright's default driver.
 
 ## Output and safety

@@ -1444,13 +1444,14 @@ export default async function ({ backend, serial, packageName, screen }) {
 import assert from 'node:assert/strict';
 import { ios, android } from 'mobilewright';
 import { MobilecliDriver } from '@mobilewright/driver-mobilecli';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
 Object.defineProperty(process, 'platform', { value: 'darwin' });
 let attached = false, closed = false, disposed = false;
 android.launch = async () => { throw new Error('Used Android launcher for iOS'); };
 ios.launch = async (options) => {
   assert.equal(options.deviceId, 'owned-udid');
   assert.equal(options.autoAppLaunch, false);
-  assert.equal(options.driver.constructor, MobilecliDriver);
+  assert.equal(options.driver.constructor, NativeIOSDriver);
   attached = true;
   return { screen: { marker: 'attached screen' }, close: async () => { closed = true; } };
 };
@@ -1553,6 +1554,95 @@ await assert.rejects(driver.getViewHierarchy(), /DeviceServer JSON hierarchy/);
                 capture_output=True,
                 text=True,
                 timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_native_ios_locators_find_webview_consent_and_tap_in_screen_points(self):
+        # DeviceKit 0.0.33 AX snapshots use numeric elementType and capitalized
+        # frame fields, unlike both its normalized tree and Android raw dumps.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dump = root / "dump.json"
+            binary = root / "mobilecli fixture"
+            node = {
+                "elementType": 9,
+                "label": "",
+                "identifier": "",
+                "frame": {"X": 37.25, "Y": 446.5, "Width": 328.5, "Height": 45.5},
+                "children": [],
+            }
+            tree = {
+                **node,
+                "elementType": 0,
+                "frame": {"X": 0, "Y": 0, "Width": 0, "Height": 0},
+                "children": [
+                    {**node, "label": "BUNTE\nTab 2 of 2", "selected": True},
+                    {
+                        **node,
+                        "elementType": 58,
+                        "children": [
+                            {**node, "label": "Akzeptieren", "identifier": "consent-accept"},
+                            {**node, "label": "Disabled", "enabled": False},
+                            {
+                                **node, "label": "Offscreen",
+                                "frame": {"X": 0, "Y": -100, "Width": 80, "Height": 40},
+                            },
+                        ],
+                    },
+                    {**node, "elementType": 40, "label": "Tracking", "value": "1"},
+                    {
+                        **node, "elementType": 49, "identifier": "search",
+                        "placeholderValue": "Search", "value": "Royals", "hasFocus": True,
+                    },
+                ],
+            }
+            dump.write_text(json.dumps({"status": "ok", "data": {"rawData": tree}}))
+            binary.write_text(
+                f"#!{shutil.which('node')}\n" + """
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[args.indexOf('--device') + 1] !== 'owned-device' ||
+    args[args.indexOf('--format') + 1] !== 'raw') process.exit(1);
+process.stdout.write(fs.readFileSync(__dirname + '/dump.json'));
+"""
+            )
+            binary.chmod(0o700)
+            script = """
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { Screen } from 'mobilewright';
+import { NativeIOSDriver } from './native-ios-driver.mjs';
+const driver = new NativeIOSDriver({
+  deviceId: 'owned-device', mobilecliPath: process.argv[1],
+});
+const screen = new Screen(driver);
+assert.equal(await screen.getByRole('button', { name: /^BUNTE/ }).isVisible(), true);
+assert.equal(await screen.getByRole('button', { name: /^akzeptieren$/i }).isVisible(), true);
+assert.equal(await screen.getByTestId('consent-accept').isVisible(), true);
+assert.equal(await screen.getByText('Offscreen').isVisible(), false);
+await assert.rejects(screen.getByText('Disabled').tap({ timeout: 100 }), /not enabled/);
+assert.equal(await screen.getByRole('switch', { name: 'Tracking' }).isChecked(), true);
+assert.equal(await screen.getByPlaceholder('Search').getValue(), 'Royals');
+const consent = screen.getByText(/^(Akzeptieren|Alle akzeptieren|Zustimmen|Accept all)$/i);
+assert.deepEqual(await consent.boundingBox(), { x: 37.25, y: 446.5, width: 328.5, height: 45.5 });
+let tapped = false;
+driver.tap = async (x, y) => {
+  // Actual AX bounds are points. Do not multiply these by the Retina scale.
+  assert.deepEqual([x, y], [202, 469]);
+  tapped = true;
+  const response = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+  response.data.rawData.children[1].children = [];
+  writeFileSync(process.argv[2], JSON.stringify(response));
+};
+await consent.tap();
+assert.equal(tapped, true);
+await consent.waitFor({ state: 'hidden', timeout: 1000 });
+writeFileSync(process.argv[2], JSON.stringify({ data: { rawData: { elements: [] } } }));
+await assert.rejects(screen.getByText('Akzeptieren').isVisible(), /DeviceKit AX hierarchy/);
+"""
+            result = subprocess.run(
+                ["node", "--input-type=module", "-e", script, str(binary), str(dump)],
+                cwd=RUNNER.parent, capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

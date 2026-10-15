@@ -73,7 +73,7 @@ def parser():
         help="Parent directory for private session files",
     )
     result.add_argument(
-        "--outputHar",
+        "--har",
         dest="output_har",
         action="store_true",
         help="Also save session.har with all intercepted HTTP(S) hosts, ignoring domain filters",

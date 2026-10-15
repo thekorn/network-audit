@@ -412,7 +412,7 @@ temporary AVD, boots it, installs a new CA in its in-memory system trust store
 and Conscrypt/Zygote mount namespaces, installs the APK and launches it.
 The emulator's network-level `-http-proxy` catches TCP connections even from
 Dart clients that ignore Android's system proxy. Non-allowlisted hosts pass
-through without interception unless `--outputHar` is enabled. UDP port 443 is rejected inside this disposable
+through without interception unless `--har` is enabled. UDP port 443 is rejected inside this disposable
 emulator so clients with HTTP/3 support fall back to HTTPS over TCP.
 
 Interact with the emulator normally. **Leaving the app in the background for
@@ -434,11 +434,11 @@ and finish the audit, or press Ctrl+C.
 
 ### Export the whole HTTP(S) session as HAR
 
-Add `--outputHar` (no value) to save `session.har` beside the reports:
+Add `--har` (no value) to save `session.har` beside the reports:
 
 ```sh
-network-audit /path/to/app.apk --domain api.example.com --outputHar
-devenv shell audit sample-app --scenario sample-app/scenarios/browse.toml --outputHar
+network-audit /path/to/app.apk --domain api.example.com --har
+devenv shell audit sample-app --scenario sample-app/scenarios/browse.toml --har
 ```
 
 The HAR includes **every intercepted HTTP(S) host**, ignoring both `--domain`
@@ -643,7 +643,7 @@ with a private umask:
   in-flight requests. A later record for the same ID replaces its earlier state.
 - `flows.mitm`: complete selected HTTP flows for analysis with `mitmweb -r` or
   `mitmdump -r`. Full captured bodies remain here even when previews are limited.
-- `session.har` (`--outputHar`): all intercepted HTTP(S) hosts, independent of the
+- `session.har` (`--har`): all intercepted HTTP(S) hosts, independent of the
   report filter. Successful saves add `har` to `session.json`; export failures
   add `har_failure` and may leave `session.har.partial`.
 - `session.json`, `emulator.log`, `proxy.log`: session state and diagnostics.

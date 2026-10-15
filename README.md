@@ -55,7 +55,7 @@ A completed run exits 0. The text summary lists the selected hosts and a total. 
 
 `--headless` hides the emulator window. `--record` adds a silent `recording.mp4` and a `Video:` line next to the report paths.
 
-Add `--outputHar` to either manual or scenario runs to also save `session.har`
+Add `--har` to either manual or scenario runs to also save `session.har`
 and print its `HAR:` path. This captures all intercepted HTTP(S) hosts for the
 whole session, including hosts outside the domain filters; the existing reports,
 terminal output, and raw flows stay filtered. It also enables TLS interception

@@ -1220,7 +1220,7 @@ class ScenarioAuditTest(unittest.TestCase):
                             "--output",
                             str(root / "runs"),
                             "--body-limit", "20",
-                            *(["--outputHar"] if output_har else []),
+                            *(["--har"] if output_har else []),
                             *override,
                         ]
                     )
@@ -1350,7 +1350,7 @@ class ScenarioAuditTest(unittest.TestCase):
                         str(scenario),
                         "--output",
                         str(root / "runs"),
-                        *(["--outputHar"] if har_mode != "off" else []),
+                        *(["--har"] if har_mode != "off" else []),
                     ]
                 )
 

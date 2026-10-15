@@ -1194,12 +1194,14 @@ class ScenarioAuditTest(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            for override, expected_hosts in (
-                ([], ["localhost", "127.0.0.1"]),
-                (["--domain", "localhost"], ["localhost"]),
+            for override, expected_hosts, output_har in (
+                ([], ["localhost", "127.0.0.1"], False),
+                (["--domain", "localhost"], ["localhost"], False),
+                ([], ["localhost", "127.0.0.1"], True),
+                (["--domain", "localhost"], ["localhost"], True),
             ):
                 with (
-                    self.subTest(override=override),
+                    self.subTest(override=override, output_har=output_har),
                     tempfile.TemporaryDirectory() as directory,
                 ):
                     root = Path(directory)
@@ -1217,6 +1219,8 @@ class ScenarioAuditTest(unittest.TestCase):
                             str(config),
                             "--output",
                             str(root / "runs"),
+                            "--body-limit", "20",
+                            *(["--outputHar"] if output_har else []),
                             *override,
                         ]
                     )
@@ -1230,7 +1234,7 @@ class ScenarioAuditTest(unittest.TestCase):
                                 "127.0.0.1", port, timeout=10
                             )
                             conn.request(
-                                "GET", f"http://{host}:{server.server_port}/ok"
+                                "GET", f"http://{host}:{server.server_port}/{host}"
                             )
                             response = conn.getresponse()
                             self.assertEqual(response.status, 200)
@@ -1259,19 +1263,46 @@ class ScenarioAuditTest(unittest.TestCase):
                     self.assertTrue(
                         all(flow["response"]["status"] == 200 for flow in flows)
                     )
+                    self.assertTrue(all(flow["response"]["truncated"] for flow in flows))
                     self.assertIn(
                         f"Total requests: {len(expected_hosts)}",
                         (session / "report.txt").read_text(),
                     )
+                    har_path = session / "session.har"
+                    if output_har:
+                        har = json.loads(har_path.read_text())
+                        self.assertEqual(har["log"]["version"], "1.2")
+                        entries = har["log"]["entries"]
+                        self.assertEqual(
+                            [entry["request"]["url"] for entry in entries],
+                            [f"http://{host}:{server.server_port}/{host}"
+                             for host in ("localhost", "127.0.0.1")],
+                        )
+                        for entry in entries:
+                            self.assertEqual(entry["response"]["status"], 200)
+                            self.assertEqual(
+                                json.loads(entry["response"]["content"]["text"]),
+                                {"answer": 42, "markup": "</script><img src=x onerror=alert(1)>"},
+                            )
+                        self.assertEqual(metadata["har"], "session.har")
+                        self.assertIn(f"HAR: {har_path.resolve()}", output.getvalue().splitlines())
+                        self.assertFalse((session / "session.har.partial").exists())
+                    else:
+                        self.assertFalse(har_path.exists())
+                        self.assertNotIn("har", metadata)
+                        self.assertNotIn("HAR:", output.getvalue())
+                    if override:
+                        self.assertNotIn(b"/127.0.0.1", (session / "flows.mitm").read_bytes())
                     report = (session / "report.html").read_text()
                     if override:
-                        self.assertIn("Other domains are not recorded.", report)
+                        self.assertIn("Other domains are not included in this report.", report)
                     else:
                         self.assertIn(
                             "Capturing: all HTTP(S) requests", output.getvalue()
                         )
                         self.assertIn("All HTTP(S) requests", report)
-                        self.assertNotIn("Other domains are not recorded.", report)
+                        self.assertNotIn("Other domains are not included in this report.", report)
+                    self.assertEqual("separately contains all intercepted HTTP(S) hosts" in report, output_har)
         finally:
             server.shutdown()
             server.server_close()
@@ -1279,17 +1310,23 @@ class ScenarioAuditTest(unittest.TestCase):
     def test_completion_failure_and_interrupt_always_emit_report(self):
         # Exercise real proxy/report IO; Android and scenario outcomes are the
         # boundaries here. Native acceptance covers the actual Mobilewright UI.
-        for outcome, state, exit_code, override in (
-            (None, "scenario completed", 0, []),
+        for outcome, state, exit_code, override, har_mode in (
+            (None, "scenario completed", 0, [], "off"),
             (
                 RuntimeError("Scenario exited with status 7; see scenario.log"),
                 "failed",
                 1,
                 ["--domain", "localhost"],
+                "off",
             ),
-            (KeyboardInterrupt(), "interrupted by user", 130, []),
+            (KeyboardInterrupt(), "interrupted by user", 130, [], "off"),
+            (None, "scenario completed", 0, [], "on"),
+            (RuntimeError("status 7"), "failed", 1, [], "on"),
+            (KeyboardInterrupt(), "interrupted by user", 130, [], "on"),
+            (None, "failed", 1, [], "write failure"),
+            (RuntimeError("status 7"), "failed", 1, [], "write failure"),
         ):
-            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(state=state, har_mode=har_mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 apk = root / "sample.apk"
                 apk.touch()
@@ -1313,12 +1350,15 @@ class ScenarioAuditTest(unittest.TestCase):
                         str(scenario),
                         "--output",
                         str(root / "runs"),
+                        *(["--outputHar"] if har_mode != "off" else []),
                     ]
                 )
 
                 def execute(path, *, session, launch_app, **_kwargs):
                     launch_app()
                     (session / "scenario.log").write_text(path.read_text())
+                    if har_mode == "write failure":
+                        (session / "session.har.partial").mkdir()
                     if outcome:
                         raise outcome
 
@@ -1330,11 +1370,13 @@ class ScenarioAuditTest(unittest.TestCase):
                     patch("cli.Emulator") as emulator,
                     patch("cli.run_scenario", side_effect=execute),
                     redirect_stdout(output),
+                    redirect_stderr(StringIO()) as errors,
                 ):
                     emulator.return_value.serial = "emulator-5580"
                     emulator.return_value.foreground.return_value = True
                     if exit_code == 1:
-                        with self.assertRaisesRegex(RuntimeError, "status 7"):
+                        expected_error = "status 7" if outcome else "Could not save session.har"
+                        with self.assertRaisesRegex(RuntimeError, expected_error):
                             audit(args)
                     else:
                         self.assertEqual(audit(args), exit_code)
@@ -1351,6 +1393,15 @@ class ScenarioAuditTest(unittest.TestCase):
                     f"Report: {(session / 'report.html').resolve()}",
                     output.getvalue().splitlines(),
                 )
+                if har_mode == "on":
+                    self.assertEqual(metadata["har"], "session.har")
+                    self.assertEqual(json.loads((session / "session.har").read_text())["log"]["entries"], [])
+                elif har_mode == "write failure":
+                    self.assertIn("Could not save session.har", metadata["har_failure"])
+                    self.assertIn(metadata["har_failure"], errors.getvalue())
+                    self.assertNotIn("har", metadata)
+                    self.assertFalse((session / "session.har").exists())
+                    self.assertNotIn("HAR:", output.getvalue())
 
 
 class ScenarioProcessTest(unittest.TestCase):
@@ -2284,7 +2335,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def proxy_session(directory, extra=(), limit=1048576):
+def proxy_session(directory, extra=(), limit=1048576, output_har=False):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -2294,6 +2345,7 @@ def proxy_session(directory, extra=(), limit=1048576):
         "NETWORK_AUDIT_SESSION": str(directory),
         "NETWORK_AUDIT_DOMAINS": '["localhost"]',
         "NETWORK_AUDIT_BODY_LIMIT": str(limit),
+        "NETWORK_AUDIT_OUTPUT_HAR": "1" if output_har else "0",
     }
     with (directory / "console.log").open("w") as log:
         process = subprocess.Popen(
@@ -2307,7 +2359,7 @@ def proxy_session(directory, extra=(), limit=1048576):
                 "--set",
                 f"confdir={ca}",
                 "--set",
-                f"allow_hosts={proxy_pattern(['localhost'])}",
+                f"allow_hosts={proxy_pattern(None if output_har else ['localhost'])}",
                 "-s",
                 str(ROOT / "capture.py"),
                 *extra,
@@ -2341,7 +2393,7 @@ class CaptureTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory)
                 origin_port = server.server_port
-                with proxy_session(path, limit=20) as (port, _):
+                with proxy_session(path, limit=20, output_har=True) as (port, _):
                     for host, endpoint, expected in (
                         ("localhost", "/ok", 200),
                         ("localhost", "/error", 418),
@@ -2385,7 +2437,57 @@ class CaptureTest(unittest.TestCase):
                 self.assertEqual(binary["response"]["bytes"], 256)
                 self.assertIn(body, (path / "flows.mitm").read_bytes())
                 self.assertNotIn("/excluded", (path / "console.log").read_text())
+                entries = json.loads((path / "session.har").read_text())["log"]["entries"]
+                self.assertEqual(len(entries), 5)
+                self.assertEqual(entries[1]["response"]["status"], 418)
+                self.assertTrue(entries[2]["request"]["url"].endswith("/excluded"))
+                self.assertTrue(entries[3]["response"]["_error"])
+                self.assertEqual(entries[4]["request"]["bodySize"], 256)
+                # Native HAR may use base64 or decoded text for binary bodies.
+                content = entries[4]["response"]["content"]
+                captured = (
+                    base64.b64decode(content["text"])
+                    if content.get("encoding") == "base64"
+                    else content["text"].encode("latin-1")
+                )
+                self.assertEqual(captured, body)
+                self.assertEqual(entries[4]["request"]["postData"]["text"].encode("latin-1"), body)
+                self.assertEqual(
+                    [header["value"] for header in entries[0]["response"]["headers"]
+                     if header["name"].lower() == "set-cookie"],
+                    ["first=1", "second=2"],
+                )
         finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_har_includes_unfiltered_request_pending_at_shutdown(self):
+        received, release = threading.Event(), threading.Event()
+
+        class PendingHandler(Handler):
+            def do_GET(self):
+                received.set()
+                release.wait(timeout=30)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PendingHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)
+                with proxy_session(path, output_har=True) as (port, _):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    self.addCleanup(conn.close)
+                    url = f"http://127.0.0.1:{server.server_port}/pending"
+                    conn.request("GET", url)
+                    self.assertTrue(received.wait(timeout=10))
+                entries = json.loads((path / "session.har").read_text())["log"]["entries"]
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["request"]["url"], url)
+                self.assertEqual(entries[0]["response"]["status"], 0)
+                self.assertTrue(entries[0]["response"]["_error"])
+                self.assertEqual(read_events(path / "events.jsonl"), ([], []))
+        finally:
+            release.set()
             server.shutdown()
             server.server_close()
 
@@ -2410,7 +2512,7 @@ class CaptureTest(unittest.TestCase):
                     "-subj",
                     "/CN=localhost",
                     "-addext",
-                    "subjectAltName=DNS:localhost",
+                    "subjectAltName=DNS:localhost,IP:127.0.0.1",
                 ],
                 check=True,
                 capture_output=True,
@@ -2422,7 +2524,7 @@ class CaptureTest(unittest.TestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
                 with proxy_session(
-                    path, ["--set", f"ssl_verify_upstream_trusted_ca={cert}"]
+                    path, ["--set", f"ssl_verify_upstream_trusted_ca={cert}"], output_har=True
                 ) as (port, ca):
                     # Match the emulator: CONNECT to an IP, then TLS with hostname SNI.
                     sock = socket.create_connection(("127.0.0.1", port), timeout=10)
@@ -2449,6 +2551,13 @@ class CaptureTest(unittest.TestCase):
                         json.loads(gzip.decompress(response.read()))["answer"], 42
                     )
                     tls.close()
+                    excluded = http.client.HTTPSConnection("127.0.0.1", port, timeout=10, context=trusted)
+                    excluded.set_tunnel("127.0.0.1", server.server_port)
+                    excluded.request("GET", "/excluded-tls")
+                    response = excluded.getresponse()
+                    self.assertEqual(response.status, 200)
+                    response.read()
+                    excluded.close()
                     # A client without our CA must fail, and produce a TLS
                     # diagnostic rather than an invented HTTP exchange.
                     untrusted = http.client.HTTPSConnection(
@@ -2468,6 +2577,11 @@ class CaptureTest(unittest.TestCase):
                 )
                 self.assertEqual(flows[0]["host"], "localhost")
                 self.assertIn('"answer":42', flows[0]["response"]["body_text"])
+                entries = json.loads((path / "session.har").read_text())["log"]["entries"]
+                self.assertEqual(len(entries), 2)
+                self.assertEqual(entries[1]["request"]["url"], f"https://127.0.0.1:{server.server_port}/excluded-tls")
+                self.assertEqual(entries[1]["response"]["status"], 200)
+                self.assertEqual(json.loads(entries[1]["response"]["content"]["text"])["answer"], 42)
                 (path / "session.json").write_text(
                     json.dumps(
                         {

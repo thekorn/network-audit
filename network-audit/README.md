@@ -412,7 +412,7 @@ temporary AVD, boots it, installs a new CA in its in-memory system trust store
 and Conscrypt/Zygote mount namespaces, installs the APK and launches it.
 The emulator's network-level `-http-proxy` catches TCP connections even from
 Dart clients that ignore Android's system proxy. Non-allowlisted hosts pass
-through without interception. UDP port 443 is rejected inside this disposable
+through without interception unless `--outputHar` is enabled. UDP port 443 is rejected inside this disposable
 emulator so clients with HTTP/3 support fall back to HTTPS over TCP.
 
 Interact with the emulator normally. **Leaving the app in the background for
@@ -431,6 +431,41 @@ display is not automatically ignored; use `--headless` explicitly in that case.
 The device serial is printed and written to the session metadata. In headless
 mode, use `adb -s <serial> shell input keyevent KEYCODE_HOME` to leave the app
 and finish the audit, or press Ctrl+C.
+
+### Export the whole HTTP(S) session as HAR
+
+Add `--outputHar` (no value) to save `session.har` beside the reports:
+
+```sh
+network-audit /path/to/app.apk --domain api.example.com --outputHar
+devenv shell audit sample-app --scenario sample-app/scenarios/browse.toml --outputHar
+```
+
+The HAR includes **every intercepted HTTP(S) host**, ignoring both `--domain`
+and scenario domain filters. The terminal, HTML/text reports, `events.jsonl`
+and `flows.mitm` still use those filters. `--output` controls the parent directory
+for the HAR along with the other session files. Without the flag, no HAR is made
+and excluded hosts continue to pass through without interception.
+
+The HAR is finalized on normal completion, Ctrl+C, SIGTERM, or a handled failure,
+and the CLI prints `HAR: <path>`. Failed requests and requests still pending at
+shutdown are included with an error; an empty session produces an empty HAR.
+A failed export fails the command without suppressing the filtered reports or
+the original audit failure. SIGKILL, a proxy crash, or forced shutdown can prevent
+export; `session.har.partial` may remain. Offline `report` regeneration does not
+reconstruct a HAR: excluded traffic is not in the filtered raw capture.
+
+Export uses mitmproxy's HAR 1.2 conversion, without `--body-limit` preview
+truncation. Bodies follow its decoded-text/base64 representation, not a byte-exact
+packet archive; binary uploads use mitmproxy's text representation. All captured
+HTTP flows are retained in memory until shutdown, so this option increases memory
+and disk use and is intended for bounded sessions, not large downloads or streams.
+
+**This enables TLS interception for excluded hosts too**, which can break pinned
+connections that previously passed through. Existing trust/pinning and backend
+limits still apply: no DNS or arbitrary TCP/UDP capture, no traffic that bypasses
+the proxy, and no shared WebKit/system helpers on iOS. The HAR can contain secrets
+from hosts outside the report filter. Review it separately before sharing.
 
 ### Record an audit video
 
@@ -608,6 +643,9 @@ with a private umask:
   in-flight requests. A later record for the same ID replaces its earlier state.
 - `flows.mitm`: complete selected HTTP flows for analysis with `mitmweb -r` or
   `mitmdump -r`. Full captured bodies remain here even when previews are limited.
+- `session.har` (`--outputHar`): all intercepted HTTP(S) hosts, independent of the
+  report filter. Successful saves add `har` to `session.json`; export failures
+  add `har_failure` and may leave `session.har.partial`.
 - `session.json`, `emulator.log`, `proxy.log`: session state and diagnostics.
   mitmproxy's console warnings and the captured traffic print to the terminal;
   `proxy.log` contains its stderr.

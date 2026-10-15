@@ -1,4 +1,4 @@
-"""mitmdump addon. Only selected HTTP exchanges enter the audit files."""
+"""mitmdump addon. Filtered audit files and an optional all-host session HAR."""
 
 import base64
 import json
@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from mitmproxy import io
+from mitmproxy.addons.savehar import SaveHar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from domains import matches
@@ -58,12 +59,20 @@ class Capture:
         self.raw = (self.directory / "flows.mitm").open("wb")
         self.writer = io.FlowWriter(self.raw)
         self.pending = {}
+        self.har_flows = {} if os.environ.get("NETWORK_AUDIT_OUTPUT_HAR") == "1" else None
 
     def running(self):
         (self.directory / "proxy.ready").touch()
 
     def emit(self, record):
         self.events.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+    def requestheaders(self, flow):
+        # Retain live flows independently of the report filter, even uploads
+        # or responses still in progress when capture ends. Native hardump
+        # only collects completed/errored flows and would omit pending ones.
+        if self.har_flows is not None:
+            self.har_flows[flow.id] = flow
 
     def request(self, flow):
         if not matches(flow.request.pretty_host, self.domains):
@@ -155,6 +164,19 @@ class Capture:
             self.writer.add(flow)
         self.events.close()
         self.raw.close()
+        if self.har_flows is not None:
+            flows = list(self.har_flows.values())
+            har = SaveHar().make_har(flows)
+            for flow, entry in zip(flows, har["log"]["entries"]):
+                if flow.error:
+                    entry["response"]["_error"] = str(flow.error)
+                elif not flow.response or flow.response.timestamp_end is None:
+                    entry["response"]["_error"] = "Capture ended before the response completed"
+            # Only publish a complete HAR. The CLI treats a missing final file
+            # as a failure, including addon errors and forced proxy shutdown.
+            partial = self.directory / "session.har.partial"
+            partial.write_text(json.dumps(har, ensure_ascii=True, indent=2) + "\n")
+            partial.replace(self.directory / "session.har")
 
 
 addons = [Capture()]

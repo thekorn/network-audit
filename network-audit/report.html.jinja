@@ -467,12 +467,18 @@
           <p class="mono">{{ metadata.domains|join(' · ') }}</p>
           <p class="muted">
             Selected-domain HTTP(S) traffic from a dedicated emulator, including
-            native clients and WebView. Other domains are not recorded.
+            native clients and WebView. Other domains are not included in this report.
           </p>
           {% endif %}
           <p class="notice">
             Not per-process attribution. No certificate-pinning bypass or
             WebSocket frame capture. QUIC is blocked to encourage TCP fallback.
+          </p>
+          {% endif %}
+          {% if metadata.get('har') %}
+          <p class="notice">
+            {{ metadata.har }} separately contains all intercepted HTTP(S) hosts,
+            including those outside this report's domain filter. Keep it private.
           </p>
           {% endif %}
         </section>

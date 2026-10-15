@@ -73,6 +73,12 @@ def parser():
         help="Parent directory for private session files",
     )
     result.add_argument(
+        "--outputHar",
+        dest="output_har",
+        action="store_true",
+        help="Also save session.har with all intercepted HTTP(S) hosts, ignoring domain filters",
+    )
+    result.add_argument(
         "--headless",
         action="store_true",
         # The pinned Linux emulator uses Qt/X11, including on Wayland via XWayland.
@@ -285,6 +291,12 @@ def audit(args):
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,
     )
+    if args.output_har:
+        print(
+            "HAR enabled: intercepting all HTTP(S) hosts, including domains outside "
+            "the report filter. This may affect certificate-pinned connections.",
+            flush=True,
+        )
     if is_ios:
         print(
             "Experimental iOS capture: macOS may request approval for Mitmproxy Redirector. "
@@ -320,6 +332,7 @@ def audit(args):
                     "NETWORK_AUDIT_SESSION": str(session),
                     "NETWORK_AUDIT_DOMAINS": json.dumps(domains),
                     "NETWORK_AUDIT_BODY_LIMIT": str(args.body_limit),
+                    "NETWORK_AUDIT_OUTPUT_HAR": "1" if args.output_har else "0",
                 }
                 if is_ios:
                     simulator = Simulator(
@@ -347,7 +360,7 @@ def audit(args):
                         "--set",
                         "termlog_verbosity=warn",
                         "--set",
-                        f"allow_hosts={proxy_pattern(domains)}",
+                        f"allow_hosts={proxy_pattern(None if args.output_har else domains)}",
                         "-s",
                         str(ROOT / "capture.py"),
                     ],
@@ -526,6 +539,17 @@ def audit(args):
             metadata["state"] = "failed"
             metadata["failure"] = recording_failure
             failure = recording_failure
+        if args.output_har:
+            if (session / "session.har").is_file():
+                metadata["har"] = "session.har"
+            else:
+                har_failure = "Could not save session.har; see proxy.log (session.har.partial may remain)"
+                metadata["har_failure"] = har_failure
+                print(har_failure, file=sys.stderr, flush=True)
+                if not failure:
+                    metadata["state"] = "failed"
+                    metadata["failure"] = har_failure
+                    failure = har_failure
         metadata["ended"] = datetime.now(UTC).isoformat()
         save()
         report = generate_report(session)
@@ -536,6 +560,8 @@ def audit(args):
         )
         if "recording" in metadata:
             print(f"Video: {session / metadata['recording']}\n", flush=True)
+        if "har" in metadata:
+            print(f"HAR: {session / metadata['har']}\n", flush=True)
         print(summary.read_text(), end="", flush=True)
     if failure:
         raise RuntimeError(failure)

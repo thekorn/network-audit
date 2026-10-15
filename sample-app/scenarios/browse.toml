@@ -1,3 +1,3 @@
-domains = ["*.bunte.de", "dummyjson.com", "*.doubleclick.net"]
+domains = ["*.bunte.de", "dummyjson.com", "*.doubleclick.net", "*.relevant-digital.com"]
 executor = "browse.mjs"
 dimensions = { width = 1280, height = 2856, density = 480 }

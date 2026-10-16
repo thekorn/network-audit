@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -11,6 +12,10 @@ class BunteView extends StatefulWidget {
 
 class _BunteViewState extends State<BunteView> {
   static final _home = Uri.parse('https://www.bunte.de');
+  static final _auditGate =
+      const bool.fromEnvironment('NETWORK_AUDIT_WEBVIEW_GATE') &&
+      kDebugMode &&
+      defaultTargetPlatform == TargetPlatform.android;
   late final WebViewController _controller;
   var _progress = 0;
   String? _error;
@@ -37,6 +42,14 @@ class _BunteViewState extends State<BunteView> {
               _progress = 0;
             });
           },
+          onPageFinished: (url) async {
+            if (_auditGate && url == 'about:blank') {
+              // CDP must not race this initial load with its first navigation.
+              await _controller.runJavaScript(
+                'window.__networkAuditGateReady = true',
+              );
+            }
+          },
           onWebResourceError: (error) {
             // Ads and other subresources can fail without breaking the page.
             if (mounted && error.isForMainFrame == true) {
@@ -47,6 +60,10 @@ class _BunteViewState extends State<BunteView> {
             }
           },
           onNavigationRequest: (request) {
+            // The audit runner installs its observer before navigating via CDP.
+            if (_auditGate && request.url == 'about:blank') {
+              return NavigationDecision.navigate;
+            }
             final scheme = Uri.tryParse(request.url)?.scheme;
             return scheme == 'https' || scheme == 'http'
                 ? NavigationDecision.navigate
@@ -54,7 +71,9 @@ class _BunteViewState extends State<BunteView> {
           },
         ),
       );
-      await _controller.loadRequest(_home);
+      await _controller.loadRequest(
+        _auditGate ? Uri.parse('about:blank') : _home,
+      );
     } on PlatformException {
       if (mounted) {
         setState(() => _error = 'Could not start the WebView. Try again.');

@@ -622,6 +622,56 @@ The adapters reuse the run's private Mobilecli daemon and fail explicitly if
 the native JSON hierarchy is unavailable; they do not fall back to Flutter or
 hard-coded coordinate taps. Linux keeps Mobilewright's default driver.
 
+### WebView ad evidence (Android)
+
+The sample's `browse.toml` also records a separate `ad-events.jsonl` ledger and
+adds an **Ad evidence** section to the offline report. This uses the app's
+debuggable WebView CDP socket directly, not Mobilecli's ABI-specific helper.
+Native accessibility still handles consent. No new SDK is added to the website.
+
+Custom executors receive `captureWebViewAds` in their context. Call it once after
+creating the WebView; the runner owns final flushing and cleanup. With no options
+it attaches to the current document and marks it **late-attach**. For early capture,
+create the WebView without loading the site and call:
+
+```js
+await captureWebViewAds({ navigateTo: 'https://www.bunte.de', waitForGate: true });
+```
+
+`navigateTo` requires `about:blank` and refuses to reload an already loaded site.
+`waitForGate` additionally waits for `window.__networkAuditGateReady === true`;
+the sample sets that marker after its initial blank page finishes loading. The
+sample's scenario env-file enables this Android-debug-only gate. Observer and
+binding registration finish before navigation. The helper refuses ambiguous
+multiple WebViews and never attaches to another app's process. iOS and manual
+runs do not collect this ledger automatically.
+
+The observer copies selected Prebid auction, bidder-request, response, no-bid,
+timeout, rejection, win and render fields at callback time. It keeps aliases and
+client/server paths, raw/original/bucketed prices, and distinct bidder/GAM IDs.
+GPT request/render callbacks and changing STF placement snapshots supply explicit
+placement mappings, targeting and refresh history. Records are appended and
+synced to disk as they arrive, not buffered until scenario completion. Report
+regeneration preserves every record rather than overwriting earlier auctions.
+
+This is **not a guarantee of every advertising fact**. Only top-level `pbjs`,
+GPT and STF are observed; other runtimes, cross-origin frame internals and
+server-side auctions may expose less. STF is sampled every 250 ms and at observed
+callbacks, so transient states between samples can be missed. Prebid history
+recovered after attachment is labeled backfill because retained objects may have
+mutated. Page navigation can destroy a context before its final callback reaches
+CDP. Disconnects, missing final flushes, sequence gaps and malformed records are
+visible, and valid earlier records remain usable after failures or interruption.
+No instrumentation is not “no bids”; a timeout is not a terminal outcome; a win
+flag is not proof of a viewable or billable impression. The report never chooses
+the highest CPM as the served winner or equates a bid CPM with a clearing price.
+
+Ad telemetry is independent of the HTTP domain filter and body preview limit.
+It intentionally excludes cookies, consent strings, user IDs, bidder parameters,
+creative markup and unrelated page targeting. Selected ad metadata is still
+untrusted, private data. HTTP exchanges are not joined to bids without supporting
+evidence. The original network capture and text request summary are unchanged.
+
 ## Output and safety
 
 Each run creates `.network-audit/runs/<UTC timestamp>-<unique suffix>/` with mode
@@ -641,6 +691,9 @@ with a private umask:
   sessions, and when regenerating reports. Empty captures show a total of zero.
 - `events.jsonl`: flushed request/response records, including failures and
   in-flight requests. A later record for the same ID replaces its earlier state.
+- `ad-events.jsonl` (opt-in Android scenarios): append-only WebView ad evidence,
+  document/auction identity and coverage diagnostics. Included in regenerated
+  HTML reports; older sessions without it show “Not collected”, not “no bids”.
 - `flows.mitm`: complete selected HTTP flows for analysis with `mitmweb -r` or
   `mitmdump -r`. Full captured bodies remain here even when previews are limited.
 - `session.har` (`--har`): all intercepted HTTP(S) hosts, independent of the

@@ -1,7 +1,7 @@
 import { setTimeout as wait } from 'node:timers/promises';
 
 // Run with: network-audit sample-app --scenario sample-app/scenarios/browse.toml
-export default async function ({ screen, expect }) {
+export default async function ({ screen, expect, backend = 'android', captureWebViewAds }) {
   console.log('Wait for the initial ten product requests');
   const loaded = screen.getByText('10 / 10 loaded · 0 failed');
   await expect(loaded).toBeVisible();
@@ -19,6 +19,9 @@ export default async function ({ screen, expect }) {
 
   console.log('Open the BUNTE WebView and accept consent');
   await screen.getByRole('button', { name: /^BUNTE/ }).tap();
+  if (backend === 'android') {
+    await captureWebViewAds({ navigateTo: 'https://www.bunte.de', waitForGate: true });
+  }
   // Native accessibility can reach consent buttons inside cross-origin frames;
   // Mobilewright's WebView Page does not currently implement frameLocator.
   const consent = screen.getByText(/^(Akzeptieren|Alle akzeptieren|Zustimmen|Accept all)$/i);

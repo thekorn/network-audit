@@ -4,6 +4,7 @@ import { android, ios, expect } from 'mobilewright';
 import { MobilecliDriver, resolveMobilecliBinary } from '@mobilewright/driver-mobilecli';
 import { NativeAndroidDriver } from './native-android-driver.mjs';
 import { NativeIOSDriver } from './native-ios-driver.mjs';
+import { captureWebViewAds } from './ad-capture.mjs';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 12)) {
@@ -39,6 +40,14 @@ if (process.argv[2] === '--check') {
       ? new NativeAndroidDriver({ url, deviceId })
       : new MobilecliDriver({ url });
   let device;
+  let adCapture;
+  let startingCapture;
+  const startAds = async (options = {}) => {
+    if (backend !== 'android') throw new Error('Ad telemetry currently requires Android WebView CDP');
+    if (startingCapture) throw new Error('WebView ad capture already started');
+    startingCapture = captureWebViewAds({ ...options, serial, packageName, sessionDirectory });
+    adCapture = await startingCapture;
+  };
   try {
     device = await (backend === 'ios' ? ios : android).launch({
       driver,
@@ -50,14 +59,20 @@ if (process.argv[2] === '--check') {
       expectTimeout: 30_000,
     });
     console.log(`Scenario started: ${filename} on ${serial}`);
-    await scenario({ device, screen: device.screen, expect, serial, packageName, sessionDirectory, backend });
+    await scenario({ device, screen: device.screen, expect, serial, packageName, sessionDirectory, backend, captureWebViewAds: startAds });
     console.log('Scenario completed');
   } finally {
     try {
-      await device?.close();
+      // A failure still flushes the current document. Forced termination leaves
+      // an append-only partial ledger (no captureStopped), visible in the report.
+      await adCapture?.stop();
     } finally {
-      // Covers failures during discovery/connection before launch returns.
-      await driver.dispose();
+      try {
+        await device?.close();
+      } finally {
+        // Covers failures during discovery/connection before launch returns.
+        await driver.dispose();
+      }
     }
   }
 }

@@ -2104,6 +2104,80 @@ class DomainsTest(unittest.TestCase):
 
 
 class ReportTest(unittest.TestCase):
+    def test_ad_observer_evidence_contract(self):
+        subprocess.run(
+            ["node", "--test", str(ROOT / "tests" / "ad-observer.test.mjs")],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_ad_ledger_preserves_history_recovery_identity_and_partial_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "session.json").write_text(json.dumps({
+                "app": "Ads", "domains": None, "started": "now", "state": "complete",
+            }))
+            base = {"schemaVersion": 1, "captureId": "one", "documentId": "doc",
+                    "receivedAt": "now", "source": "live", "sequence": 1,
+                    "type": "documentStarted", "data": {"installation": "late"}}
+            malicious = "</script><img src=x onerror=alert(1)>"
+            records = [
+                {"schemaVersion": 1, "captureId": "one", "source": "host",
+                 "type": "captureStarted", "data": {}},
+                base,
+                {**base, "sequence": 3, "type": "bidResponse", "source": "backfill",
+                 "data": {"bid": {"adUnitCode": malicious, "auctionId": "a", "cpm": 2,
+                                   "currency": "EUR", "originalCpm": 3, "pbCg": "1.50"}}},
+                {**base, "sequence": 3, "type": "bidWon", "data": {}},
+                {**base, "sequence": 4, "type": "slotSnapshot", "data": {"slots": [
+                    {"key": "slot", "relevantPlacementId": malicious, "reloadCount": 0}]}},
+                {**base, "sequence": 5, "type": "slotSnapshot", "data": {"slots": [
+                    {"key": "slot", "relevantPlacementId": malicious, "reloadCount": 1}]}},
+                {**base, "captureId": "two", "type": "documentStopped"},
+                {"schemaVersion": 99, "data": malicious},
+                {"schemaVersion": 1, "captureId": "two", "source": "host",
+                 "type": "captureStopped", "data": {"flushed": True, "disconnected": False}},
+            ]
+            log = "\n".join(json.dumps(r) for r in records[:3]) + '\n{"broken":\n'
+            log += "\n".join(json.dumps(r) for r in records[3:])
+            (path / "ad-events.jsonl").write_text(log)
+            report = generate_report(path).read_text()
+            match = re.search(r'<script type="application/json" id="audit-data">(.*?)</script>', report, re.DOTALL)
+            assert match is not None
+            ads = json.loads(match[1])["ads"]
+            self.assertEqual(ads["records"], records)
+            self.assertTrue(ads["collected"])
+            self.assertEqual(len(ads["documents"]), 2)
+            self.assertEqual([d["partial"] for d in ads["documents"]], [True, False])
+            self.assertEqual([c["partial"] for c in ads["captures"]], [True, False])
+            self.assertEqual(ads["documents"][0]["records"], [1, 2, 3, 4, 5])
+            self.assertIn("Sequence gap", " ".join(ads["documents"][0]["diagnostics"]))
+            self.assertIn("Duplicate sequence 3", ads["documents"][0]["diagnostics"])
+            self.assertIn("Malformed ad record", " ".join(ads["diagnostics"]))
+            self.assertIn("Unsupported ad schema", " ".join(ads["diagnostics"]))
+            self.assertNotIn(malicious, report)
+            self.assertIn("\\u003c/script\\u003e", report)
+            self.assertLess(report.index('id="ads"'), report.index('id="requests"'))
+            self.assertEqual((path / "ad-events.jsonl").read_text(), log)
+            self.assertEqual((path / "report.txt").read_text(),
+                             "Requests per domain:\nNo matching HTTP requests captured.\nTotal requests: 0\n")
+
+    def test_report_without_ad_log_is_not_collected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "session.json").write_text(json.dumps({
+                "app": "Legacy", "domains": [], "started": "now", "state": "complete",
+            }))
+            report = generate_report(path).read_text()
+            match = re.search(r'<script type="application/json" id="audit-data">(.*?)</script>', report, re.DOTALL)
+            assert match is not None
+            ads = json.loads(match[1])["ads"]
+            self.assertFalse(ads["collected"])
+            self.assertEqual(ads["records"], [])
+            self.assertIn("Not collected", report)
+
     def test_report_command_summarizes_unique_requests_per_host(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

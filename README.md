@@ -53,6 +53,12 @@ Uses the same emulator, capture, and report. The scenario in `sample-app/scenari
 
 A completed run exits 0. The text summary lists the selected hosts and a total. A previously verified Android run contained twenty successful product GETs, two per product, plus BUNTE traffic after consent. BUNTE is a live site, so a changed consent dialog can fail the scenario. Failure or timeout exits 1 and still writes a partial report once a session exists. Interrupting with Ctrl+C exits 130.
 
+The Android browse scenario also installs an ad observer before BUNTE's first
+page load. It writes `ad-events.jsonl` and adds placement, auction, bidder, price,
+ID and win/render evidence to the HTML report. Earlier observations survive
+refreshes and report regeneration; late attachment, missing data and capture gaps
+remain explicit. See [scope and limits](network-audit/README.md#webview-ad-evidence-android).
+
 `--headless` hides the emulator window. `--record` adds a silent `recording.mp4` and a `Video:` line next to the report paths.
 
 Add `--har` to either manual or scenario runs to also save `session.har`
@@ -80,7 +86,7 @@ The command prints the same `Report`, `Text report`, and `Raw flows` paths. A co
 devenv shell -- network-audit report .network-audit/runs/<session>
 ```
 
-Reads `events.jsonl` in that directory, rewrites `report.html` and `report.txt`, and prints the HTML path, `Text report:`, and the host summary. No emulator or proxy starts.
+Reads `events.jsonl` and optional `ad-events.jsonl` in that directory, rewrites `report.html` and `report.txt`, and prints the HTML path, `Text report:`, and the host summary. No emulator or proxy starts.
 
 The same regeneration, without the Android SDK, is:
 

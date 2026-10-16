@@ -352,6 +352,26 @@
       [hidden] {
         display: none !important;
       }
+      #ads {
+        margin-bottom: 30px;
+        overflow-wrap: anywhere;
+      }
+      #ads summary {
+        cursor: pointer;
+        padding: 10px 0;
+      }
+      .ad-document, .ad-placement {
+        border-top: 1px solid var(--border);
+        margin-top: 12px;
+      }
+      .ad-placement > summary { font-weight: 650; }
+      .ad-placement > .mono { white-space: pre-wrap; }
+      .ad-table-wrap { overflow-x: auto; margin: 12px 0; }
+      .ad-table { min-width: 660px; }
+      .ad-table th:nth-child(1) { width: 20%; }
+      .ad-table th:nth-child(2) { width: 23%; }
+      .ad-table th:nth-child(3) { width: 27%; }
+      .ad-table .notice { display: block; }
       @media (max-width: 700px) {
         main {
           padding: 24px 16px 70px;
@@ -492,6 +512,12 @@
         <p>{{ diagnostic }}</p>
         {% endfor %}
       </section>
+      <section id="ads" class="panel">
+        <h2>Ad evidence · WebView observation ledger</h2>
+        <p class="notice">Bid requests, responses and serving evidence, preserved across auctions and refreshes. STF won flags, Prebid win/render and GPT render are independent observations—not a highest-CPM winner or proof of a billable impression.</p>
+        <p class="notice">CPM, original price and pbCg (the overlay’s price bucket) are separate. Amazon prices may be unavailable. HTTP capture is separate; no network correlation is inferred.</p>
+        <div id="ad-evidence"></div>
+      </section>
       <section id="requests">
         <h2>Request &amp; response explorer</h2>
         <div class="toolbar">
@@ -522,7 +548,7 @@
       </footer>
     </main>
     <script type="application/json" id="audit-data">
-      {{ {'flows': flows, 'metadata': metadata}|tojson }}
+      {{ {'flows': flows, 'metadata': metadata, 'ads': ads}|tojson }}
     </script>
     <script>
       "use strict";
@@ -540,7 +566,7 @@
         updateTheme();
       });
       updateTheme();
-      const { flows } = JSON.parse(
+      const { flows, ads } = JSON.parse(
         document.getElementById("audit-data").textContent,
       );
       const el = (tag, text, cls) => {
@@ -549,6 +575,152 @@
         if (cls) node.className = cls;
         return node;
       };
+      function evidence(parent, title, value) {
+        const details = el("details");
+        details.append(el("summary", title));
+        details.addEventListener("toggle", () => {
+          if (details.open && details.childElementCount === 1)
+            details.append(el("pre", JSON.stringify(value, null, 2)));
+        });
+        parent.append(details);
+        return details;
+      }
+      const list = (value) => Array.isArray(value) ? value : [];
+      const known = (value) => value ?? "not observed";
+      const price = (amount, currency) => amount == null ? "not observed" : `${amount} ${currency ?? "(currency unknown)"}`;
+      const observationLabels = {
+        bidRequested: "Bid requested", bidResponse: "Bid response", noBid: "No-bid observation",
+        bidTimeout: "Timeout observation", bidRejected: "Bid rejected", bidWon: "Prebid win",
+        adRenderSucceeded: "Prebid render succeeded", adRenderFailed: "Prebid render failed",
+        slotRequested: "GPT request", slotResponseReceived: "GPT response", slotRenderEnded: "GPT render",
+        slotOnload: "GPT creative loaded", impressionViewable: "GPT viewability event",
+      };
+      function bidTable(parent, observations) {
+        const wrap = el("div", undefined, "ad-table-wrap");
+        const table = el("table", undefined, "query-params ad-table");
+        table.setAttribute("aria-label", "Bidder observations");
+        const head = el("thead"), row = el("tr"), body = el("tbody");
+        for (const label of ["Bidder / path", "Observation", "Price evidence", "Identifiers / evidence"]) {
+          const th = el("th", label);
+          th.scope = "col";
+          row.append(th);
+        }
+        head.append(row);
+        for (const {record, bid} of observations) {
+          const tr = el("tr"), bidder = el("td", known(bid?.bidderCode ?? bid?.bidder));
+          bidder.append(el("small", known(bid?.src ?? bid?.source), "notice"));
+          const status = el("td", observationLabels[record.type] ?? record.type);
+          status.append(el("small", `${record.source} · #${record.sequence}`, "notice"));
+          const money = el("td", bid ? `CPM ${price(bid.cpm, bid.currency)}` : "—");
+          if (bid) money.append(el("small", `Original ${price(bid.originalCpm, bid.originalCurrency)}\npbCg ${known(bid.pbCg)}`, "notice"));
+          const ids = el("td");
+          if (bid) ids.append(el("span", `Request ${known(bid.requestId ?? bid.bidId)}\nAd ${known(bid.adId)}\nBidder creative ${known(bid.creativeId)}`));
+          else if (record.type === "slotRenderEnded") ids.append(el("span", `GAM line ${known(record.data.sourceAgnosticLineItemId ?? record.data.lineItemId)}\nGAM creative ${known(record.data.sourceAgnosticCreativeId ?? record.data.creativeId)}`));
+          else if (record.data.adId) ids.append(el("span", `Ad ${record.data.adId}`));
+          evidence(ids, "Raw observation", bid ? { bid, record } : record);
+          tr.append(bidder, status, money, ids);
+          body.append(tr);
+        }
+        table.append(head, body);
+        wrap.append(table);
+        parent.append(wrap);
+      }
+      const adRoot = document.getElementById("ad-evidence");
+      adRoot.append(el("p", ads.collected
+        ? `${ads.records.length} records · ${ads.documents.length} documents · append-only evidence`
+        : "Not collected · no ad-event log. This is not evidence of no bids."));
+      ads.diagnostics.forEach((text) => adRoot.append(el("p", text, "error")));
+      for (const capture of ads.captures) {
+        const hostRecords = capture.records.map((i) => ads.records[i]).filter((r) => r.source === "host");
+        if (capture.partial) adRoot.append(el("p", "Partial capture: final flush missing or connection lost. Earlier records are retained.", "error"));
+        for (const record of hostRecords.filter((r) => r.type === "diagnostic")) adRoot.append(el("p", record.data?.message, "error"));
+        evidence(adRoot, `Capture transport · ${capture.partial ? "partial" : "final flush recorded"}`, hostRecords);
+      }
+      for (const document of ads.documents) {
+        const records = document.records.map((i) => ads.records[i]);
+        const section = el("details", undefined, "ad-document");
+        const start = records.find((r) => r.type === "documentStarted");
+        const page = start?.page ?? records[0]?.page ?? "Unknown page";
+        section.open = page.startsWith("http");
+        section.append(el("summary", `${page} · ${records.length} observation${records.length === 1 ? "" : "s"} · ${document.partial ? "partial document" : "end observed"}`));
+        adRoot.append(section);
+        const coverage = records.filter((r) => ["coverage", "documentStopped", "documentHidden"].includes(r.type)).at(-1)?.data ?? {};
+        const prebidObserved = coverage.prebidObserved || records.some((r) => r.type === "instrumentation" && r.data.provider === "prebid");
+        const gptObserved = coverage.gptObserved || records.some((r) => r.type === "instrumentation" && r.data.provider === "gpt");
+        const stfObserved = coverage.stfObserved || records.some((r) => r.type === "slotSnapshot");
+        section.append(el("p", `Installation: ${known(start?.data.installation)} · Prebid ${prebidObserved ? "observed" : "not observed"} · GPT ${gptObserved ? "observed" : "not observed"} · STF ${stfObserved ? "observed" : "not observed"}`, "notice"));
+        if (document.partial) section.append(el("p", "No final document flush observed. Navigation or interruption may have lost the tail; earlier observations remain available.", "error notice"));
+        if (start?.data.installation === "late-attach") section.append(el("p", "Late attachment: earlier events may be missing. Retained backfill may already have mutated.", "error"));
+        const backfill = records.filter((r) => r.source === "backfill").length;
+        if (backfill) section.append(el("p", `${backfill} backfilled records: retained vendor history, not event-time evidence.`, "notice"));
+        section.append(el("p", "Missing instrumentation is not no bids. STF is sampled every 250 ms and at observed callbacks; transient states between samples may be missed. Only top-level pbjs / GPT / STF are observed.", "notice"));
+        document.diagnostics.forEach((text) => section.append(el("p", text, "error")));
+        for (const record of records.filter((r) => r.type === "diagnostic")) section.append(el("p", record.data.message, "error"));
+        evidence(section, "Instrumentation, coverage, installation / late attachment and backfill diagnostics",
+          records.filter((r) => ["documentStarted", "instrumentation", "coverage", "diagnostic", "documentStopped", "documentHidden"].includes(r.type)));
+        // Exact identity only. Keep every mapping observation, including refresh changes.
+        const mappings = new Map();
+        const snapshots = records.filter((r) => r.type === "slotSnapshot");
+        for (const record of snapshots) {
+          for (const slot of list(record.data.slots)) {
+            if (typeof slot.relevantPlacementId === "string") {
+              if (!mappings.has(slot.relevantPlacementId)) mappings.set(slot.relevantPlacementId, []);
+              mappings.get(slot.relevantPlacementId).push({sequence: record.sequence, slot});
+            }
+          }
+        }
+        evidence(section, `STF snapshot history (${snapshots.length}) · all mappings, refreshes, overlay bids and recorded wins`, snapshots);
+        section.append(el("h3", "Placements & auctions"));
+        const placements = new Map();
+        for (const [code, history] of mappings) {
+          const last = history.at(-1).slot;
+          const placement = el("details", undefined, "ad-placement");
+          placement.append(el("summary", `${last.placementCode ?? code} · ${history.length} snapshots`));
+          placement.append(el("p", `STF ${known(last.key)} · DOM ${known(last.containerId)}\nPrebid ${code}\nGAM ${known(last.gptAdUnitPath)}`, "mono"));
+          placement.append(el("p", "Grouped by exact observed Prebid code, not inferred names. Mapping history may change; this is not time-specific attribution.", "notice"));
+          evidence(placement, "Placement mapping / refresh history", history);
+          // Wins from snapshots remain separate from event-time Prebid/GPT rows.
+          const wins = history.flatMap(({sequence, slot}) => list(slot.overlayBids)
+            .filter((bid) => bid.won === true).map((bid) => ({ sequence, reloadCount: slot.reloadCount, bid })));
+          evidence(placement, `STF won flags (${wins.length} snapshot observations)`, wins);
+          evidence(placement, "GAM result history · order / line item / creative / response ID", history.map(({sequence, slot}) => ({sequence, reloadCount: slot.reloadCount, gptAdObj: slot.gptAdObj})));
+          placements.set(code, placement);
+          section.append(placement);
+        }
+        const unmatched = el("details", undefined, "ad-placement");
+        unmatched.append(el("summary", "Unmatched / document-wide observations · retained without inferred identity"));
+        section.append(unmatched);
+        const auctions = new Map();
+        const addObservation = (record, bid, auctionId) => {
+          const codes = bid ? [bid.adUnitCode] : record.data.adUnitCodes;
+          const matched = Array.isArray(codes) ? codes.filter((code) => placements.has(code)) : [];
+          // Auction lifecycle evidence may name multiple exact placements. Show it
+          // under each, while the raw ledger remains a single original record.
+          for (const code of matched.length ? new Set(matched) : [null]) {
+            const id = auctionId ?? "auction ID unavailable";
+            const key = JSON.stringify([code, id]);
+            if (!auctions.has(key)) auctions.set(key, {code, id, observations: []});
+            auctions.get(key).observations.push({record, bid});
+          }
+        };
+        for (const record of records) {
+          if (["slotSnapshot", "documentStarted", "instrumentation", "coverage", "diagnostic", "documentStopped", "documentHidden"].includes(record.type)) continue;
+          const data = record.data || {};
+          const bids = Array.isArray(data.bids) ? data.bids : (data.bid ? [data.bid] : []);
+          if (bids.length) for (const bid of bids) addObservation(record, bid, bid.auctionId ?? data.auctionId);
+          else addObservation(record, null, data.auctionId);
+        }
+        for (const {code, id, observations} of auctions.values()) {
+          const auction = el("details");
+          auction.append(el("summary", `Auction ${id} · ${observations.length} observations`));
+          (placements.get(code) || unmatched).append(auction);
+          auction.addEventListener("toggle", () => {
+            if (auction.open && auction.childElementCount === 1) bidTable(auction, observations);
+          });
+        }
+        evidence(section, "Document raw ledger · original order", records);
+      }
+      evidence(adRoot, "Complete raw ad ledger · includes unsupported and unmatched records", ads.records);
       const host = document.getElementById("host"),
         status = document.getElementById("status"),
         search = document.getElementById("search");

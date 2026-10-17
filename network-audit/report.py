@@ -94,6 +94,25 @@ def generate_report(session):
     metadata = json.loads((session / "session.json").read_text())
     flows, diagnostics = read_events(session / "events.jsonl")
     ads = read_ad_events(session / "ad-events.jsonl")
+    ad_counts = Counter()
+    ad_responses = []
+    # Count event observations, not repeated prices in snapshots, wins or renders.
+    # Use validated document records; unsupported records stay in the raw ledger.
+    for document in ads["documents"]:
+        for index in document["records"]:
+            record = ads["records"][index]
+            data = record["data"]
+            if record.get("type") == "bidRequested":
+                bids = data.get("bids")
+                if isinstance(bids, list):
+                    ad_counts["requests"] += len(bids)
+            elif record.get("type") == "noBid":
+                ad_counts["no_bids"] += 1
+            elif record.get("type") == "bidResponse":
+                bid = data.get("bid")
+                bid = bid if isinstance(bid, dict) else {}
+                ad_responses.append({"record": record, "bid": bid})
+                ad_counts["priced_responses"] += bid.get("cpm") is not None
     for flow in flows:
         try:
             url = urlsplit(flow.get("url", ""))
@@ -124,6 +143,8 @@ def generate_report(session):
     output = environment.get_template("report.html.jinja").render(
         metadata=metadata,
         ads=ads,
+        ad_counts=ad_counts,
+        ad_responses=ad_responses,
         flows=flows,
         diagnostics=diagnostics,
         host_counts=counts.most_common(),

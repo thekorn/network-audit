@@ -368,6 +368,7 @@
       .ad-placement > .mono { white-space: pre-wrap; }
       .ad-table-wrap { overflow-x: auto; margin: 12px 0; }
       .ad-table { min-width: 660px; }
+      #ad-responses .ad-table { min-width: 960px; }
       .ad-table th:nth-child(1) { width: 20%; }
       .ad-table th:nth-child(2) { width: 23%; }
       .ad-table th:nth-child(3) { width: 27%; }
@@ -516,6 +517,36 @@
         <h2>Ad evidence · WebView observation ledger</h2>
         <p class="notice">Bid requests, responses and serving evidence, preserved across auctions and refreshes. STF won flags, Prebid win/render and GPT render are independent observations—not a highest-CPM winner or proof of a billable impression.</p>
         <p class="notice">CPM, original price and pbCg (the overlay’s price bucket) are separate. Amazon prices may be unavailable. HTTP capture is separate; no network correlation is inferred.</p>
+        {% if ads.collected %}
+        <p>{{ ad_counts.requests }} bid requests · {{ ad_responses|length }} bid responses · {{ ad_counts.no_bids }} no-bid observations</p>
+        <p class="notice">Bid requests and no-bid observations have no offered CPM; null there is expected, not a missing price. Response observations are shown below, without counting the same prices again in win/render events or STF snapshots. Backfill is retained history, not event-time evidence.</p>
+        <details id="ad-responses" open>
+          <summary>Bid responses · {{ ad_responses|length }} responses · {{ ad_counts.priced_responses }} with CPM</summary>
+          {% if ad_responses %}
+          {% macro ad_price(amount, currency) -%}
+          {% if amount is none %}not observed{% else %}{{ amount }} {{ currency if currency is not none else '(currency unknown)' }}{% endif %}
+          {%- endmacro %}
+          <div class="ad-table-wrap">
+            <table class="query-params ad-table" aria-label="Bid responses">
+              <thead><tr><th scope="col">Bidder / path</th><th scope="col">Price evidence</th><th scope="col">Placement / auction</th><th scope="col">Observation</th></tr></thead>
+              <tbody>
+                {% for response in ad_responses %}
+                {% set bid, record = response.bid, response.record %}
+                <tr>
+                  <td>{{ bid.get('bidderCode') or bid.get('bidder') or 'not observed' }}<small class="notice">{{ bid.get('src') or bid.get('source') or 'not observed' }}</small></td>
+                  <td>CPM {{ ad_price(bid.get('cpm'), bid.get('currency')) }}<small class="notice">Original {{ ad_price(bid.get('originalCpm'), bid.get('originalCurrency')) }}<br>pbCg {{ bid.get('pbCg') if bid.get('pbCg') is not none else 'not observed' }}</small></td>
+                  <td>{{ bid.get('adUnitCode') or 'not observed' }}<small class="notice">Auction {{ bid.get('auctionId') or 'not observed' }}</small></td>
+                  <td>{{ record.get('source', 'not observed') }} · #{{ record.get('sequence', 'not observed') }}<small class="notice">{{ record.get('page', 'Unknown page') }}<br>Document {{ record.documentId }}</small></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="notice">No bid-response events recorded. Check instrumentation and capture coverage below; this does not prove there were no bids.</p>
+          {% endif %}
+        </details>
+        {% endif %}
         <div id="ad-evidence"></div>
       </section>
       <section id="requests">

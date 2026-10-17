@@ -654,6 +654,13 @@ placement mappings, targeting and refresh history. Records are appended and
 synced to disk as they arrive, not buffered until scenario completion. Report
 regeneration preserves every record rather than overwriting earlier auctions.
 
+The report opens with a bid-response overview so offered CPMs are not buried in
+request/no-bid rows. Requests and no-bid observations normally have null prices;
+they are not priced responses. The overview counts response events, not repeated
+prices in win/render events or snapshots, and keeps zero CPM distinct from an
+unobserved price. Regenerate an existing report to show this overview without
+recapturing traffic or changing its ledger.
+
 This is **not a guarantee of every advertising fact**. Only top-level `pbjs`,
 GPT and STF are observed; other runtimes, cross-origin frame internals and
 server-side auctions may expose less. STF is sampled every 250 ms and at observed

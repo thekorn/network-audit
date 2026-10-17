@@ -2164,6 +2164,55 @@ class ReportTest(unittest.TestCase):
             self.assertEqual((path / "report.txt").read_text(),
                              "Requests per domain:\nNo matching HTTP requests captured.\nTotal requests: 0\n")
 
+    def test_bid_response_overview_exposes_prices_without_counting_requests_or_snapshots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "session.json").write_text(json.dumps({
+                "app": "Ads", "domains": None, "started": "now", "state": "complete",
+            }))
+            bid = {"bidderCode": "client-alias", "adUnitCode": "/slot/top",
+                   "auctionId": "first", "cpm": 2.37, "currency": "EUR",
+                   "originalCpm": 2.61, "originalCurrency": "USD", "pbCg": "2.30"}
+            events = [
+                ("bidRequested", {"bids": [{"cpm": None}, {"cpm": None}]}),
+                ("noBid", {"bid": {"cpm": None}}),
+                ("bidResponse", {"bid": bid}),
+                ("bidResponse", {"bid": {**bid, "bidderCode": "zero-alias", "cpm": 0}}),
+                ("bidResponse", {"bid": {"bidderCode": "unknown-alias", "cpm": None}}),
+                ("bidWon", {"bid": bid}),
+                ("slotSnapshot", {"slots": [{"overlayBids": [bid], "retainedPrebidBids": [bid]}]}),
+            ]
+            records = [
+                {"schemaVersion": 1, "captureId": "capture", "documentId": "doc",
+                 "sequence": index, "type": kind, "data": data,
+                 "source": "backfill" if index == 4 else "live", "page": "https://publisher.test/"}
+                for index, (kind, data) in enumerate(events, 1)
+            ]
+            log = "\n".join(json.dumps(r) for r in records)
+            (path / "ad-events.jsonl").write_text(log)
+            report = generate_report(path).read_text()
+            self.assertIn("2 bid requests · 3 bid responses · 1 no-bid observations", report)
+            overview = re.search(r'<details id="ad-responses" open>(.*?)</details>', report, re.DOTALL)
+            self.assertIsNotNone(overview, "Bid responses must be visible without expanding auctions")
+            assert overview is not None
+            self.assertIn("3 responses · 2 with CPM", overview[1])
+            self.assertIn("CPM 2.37 EUR", overview[1])
+            self.assertIn("CPM 0 EUR", overview[1])
+            self.assertIn("CPM not observed", overview[1])
+            self.assertIn("Original 2.61 USD", overview[1])
+            self.assertIn("pbCg 2.30", overview[1])
+            self.assertIn("/slot/top", overview[1])
+            self.assertIn("Auction first", overview[1])
+            self.assertIn("backfill · #4", overview[1])
+            self.assertEqual(overview[1].count("client-alias"), 1)
+            self.assertIn("Bid requests and no-bid observations have no offered CPM", report)
+            self.assertEqual((path / "ad-events.jsonl").read_text(), log)
+
+            (path / "ad-events.jsonl").write_text("")
+            report = generate_report(path).read_text()
+            self.assertIn("No bid-response events recorded", report)
+            self.assertIn("this does not prove there were no bids", report)
+
     def test_report_without_ad_log_is_not_collected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -2177,6 +2226,7 @@ class ReportTest(unittest.TestCase):
             self.assertFalse(ads["collected"])
             self.assertEqual(ads["records"], [])
             self.assertIn("Not collected", report)
+            self.assertNotIn('id="ad-responses"', report)
 
     def test_report_command_summarizes_unique_requests_per_host(self):
         with tempfile.TemporaryDirectory() as directory:

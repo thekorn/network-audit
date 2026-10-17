@@ -16,7 +16,7 @@ Runs every check even when one of them fails, and exits 0 only when all of them 
 
 | Check | What a pass means |
 | --- | --- |
-| `test:toolchain` | `flutter`, `dart`, `java`, `adb`, `mitmdump`, `node`, and `network-audit --help` all run |
+| `test:toolchain` | `flutter`, `dart`, `java`, `adb`, `mitmdump`, `node`, `network-audit --help`, and `har-viewer --help` all run |
 | `test:android-sdk` | API 34–36 platforms, build-tools, NDK, and CMake are present |
 | `test:pyright` | The CLI and its tests type-check |
 | `test:python` | Python unit tests pass, including local HTTP/TLS proxy traffic |
@@ -69,6 +69,17 @@ for those extra hosts, which can affect pinned connections. The HAR is unredacte
 is not truncated by `--body-limit`, and uses additional memory/disk space.
 Existing proxy and backend capture limits still apply; see the
 [HAR guide](network-audit/README.md#export-the-whole-https-session-as-har).
+
+Open a saved HAR in [HAR Viewer](https://github.com/thekorn/har-viewer), included
+in the devenv shell:
+
+```bash
+devenv shell -- har-viewer --input .network-audit/runs/<session>/session.har
+```
+
+This opens a native desktop window on Linux or Apple Silicon macOS. On Linux,
+set `HAR_VIEWER_SOFTWARE=1` to use software Vulkan rendering; a desktop session
+is still required.
 
 ## Capture the sample on iOS Simulator
 

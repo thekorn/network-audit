@@ -6,5 +6,10 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+  har-viewer:
+    url: github:thekorn/har-viewer
+    inputs:
+      devenv:
+        follows: devenv
 nixpkgs:
   allow_unfree: true

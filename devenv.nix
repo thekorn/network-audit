@@ -41,6 +41,7 @@ in
       pkgs.pyright
       pkgs.openssl
       pkgs.nodejs_24
+      inputs.har-viewer.packages.${pkgs.stdenv.hostPlatform.system}.default
     ];
 
     scripts.network-audit.exec = ''
@@ -97,6 +98,7 @@ in
             node --version
             node "$NETWORK_AUDIT_SCENARIO_RUNNER" --check
             network-audit --help
+            har-viewer --help
           '';
 
           "test:android-sdk".exec = ''

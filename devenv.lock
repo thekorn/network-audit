@@ -159,6 +159,27 @@
         "type": "github"
       }
     },
+    "har-viewer": {
+      "inputs": {
+        "devenv": [
+          "devenv"
+        ],
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1792228531,
+        "narHash": "sha256-OQpH5EcQg+cZ0U+N7z4OwT/dKcJV/gzqac+41Hr359E=",
+        "owner": "thekorn",
+        "repo": "har-viewer",
+        "rev": "058e668b2d896a48e513bd3b0a706e9049e2b1a4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "thekorn",
+        "repo": "har-viewer",
+        "type": "github"
+      }
+    },
     "nix": {
       "inputs": {
         "flake-compat": [
@@ -227,6 +248,22 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1791956154,
+        "narHash": "sha256-jBYGPi4udQ9uo4KQp9m2J0546nJVQitG15gvZSaVVAs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "55bfb4d7437bd4e09ab7cba58a43bd68eb310044",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1791366222,
         "narHash": "sha256-o0N4g6uSOIppU7CGToNvGlMf5vC+B6O6ukFHKY/TKOY=",
         "owner": "NixOS",
@@ -244,7 +281,8 @@
     "root": {
       "inputs": {
         "devenv": "devenv",
-        "nixpkgs": "nixpkgs"
+        "har-viewer": "har-viewer",
+        "nixpkgs": "nixpkgs_2"
       }
     },
     "rust-overlay": {

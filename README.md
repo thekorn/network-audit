@@ -69,6 +69,11 @@ not live UI or unsaved memory. Use the exact same APK and pinned toolchain;
 checkpoints can consume several GiB and contain whole-device credentials and
 private data outside your domain filter. See [state checkpoint limits and usage](network-audit/README.md#save-state-and-start-another-run-from-it-android).
 
+The same flags are available experimentally with `--backend=ios`, using a
+Simulator `.app` and matching Xcode/runtime on macOS. Native archive round-trip
+acceptance is still pending, and earlier audit CA trust entries remain (private
+keys are not saved). See [iOS checkpoint requirements and limits](network-audit/README.md#save-state-on-ios-simulator-experimental).
+
 Add `--har` to either manual or scenario runs to also save `session.har`
 and print its `HAR:` path. This captures all intercepted HTTP(S) hosts for the
 whole session, including hosts outside the domain filters; the existing reports,

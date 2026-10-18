@@ -60,7 +60,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/libexec/network-audit" "$out/bin"
-    cp *.py scenario.schema.json report.html.jinja "$out/libexec/network-audit/"
+    cp *.py ios_clone.m scenario.schema.json report.html.jinja "$out/libexec/network-audit/"
     makeWrapper ${python}/bin/python3 "$out/bin/network-audit" \
       --add-flags "$out/libexec/network-audit/cli.py" \
       --prefix PATH : ${lib.makeBinPath runtimePackages} \

@@ -8,7 +8,7 @@ pkgs.flutterPackages.wrapFlutter (
   pkgs.flutterPackages.mkFlutter (
     (builtins.fromJSON (builtins.readFile ./flutter.json))
     // {
-      patches = pkgs.flutter.unwrapped.patches ++ [
+      patches = pkgs.flutter.unwrapped.patches ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
         # macOS openrsync ignores --chmod when copying immutable SDK artifacts.
         # Make only the copied frameworks writable before lipo/codesigning.
         (pkgs.fetchpatch {

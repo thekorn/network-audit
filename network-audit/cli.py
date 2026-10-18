@@ -21,6 +21,7 @@ from ios import Simulator, SimulatorRecording, app_identity, build_app, check_si
 from recording import ScreenRecording
 from report import generate_report
 from scenario import load_scenario, run_scenario
+from state import Checkpoint, checkpoint_identity, image_tool, save_checkpoint
 
 ROOT = Path(__file__).resolve().parent
 
@@ -77,6 +78,17 @@ def parser():
         dest="output_har",
         action="store_true",
         help="Also save session.har with all intercepted HTTP(S) hosts, ignoring domain filters",
+    )
+    result.add_argument(
+        "--save-state",
+        action="store_true",
+        help="Android: save a private cold-device checkpoint beside the report (can use several GiB)",
+    )
+    result.add_argument(
+        "--restore-state",
+        type=Path,
+        metavar="RUN_OR_STATE_DIRECTORY",
+        help="Android: start from a copy of a previous checkpoint; requires the same APK and toolchain",
     )
     result.add_argument(
         "--headless",
@@ -141,6 +153,9 @@ def audit(args):
         raise ValueError(f"App not found: {app}")
     is_ios = args.backend == "ios"
     is_project = app.is_dir() and app.suffix != ".app"
+    if is_ios and (args.save_state or args.restore_state):
+        raise ValueError("--save-state and --restore-state are Android-only")
+    checkpoint = Checkpoint(args.restore_state) if args.restore_state else None
     if not is_ios and (args.ios_runtime is not None or args.ios_device_type is not None):
         raise ValueError("--ios-runtime and --ios-device-type require --backend=ios")
     if is_ios and not is_project:
@@ -223,6 +238,8 @@ def audit(args):
                 "on an Apple Silicon Mac or x86_64 Linux KVM host."
             )
     system_image = None if is_ios else check_emulator()
+    if args.save_state:
+        image_tool()
     if is_project:
         if not (app / "pubspec.lock").exists():
             raise ValueError("Flutter projects must have a committed pubspec.lock")
@@ -254,6 +271,12 @@ def audit(args):
     else:
         artifact = app
     package, activity = (app_identity(artifact), None) if is_ios else apk_identity(artifact)
+    identity = None
+    if args.save_state or checkpoint:
+        identity = checkpoint_identity(artifact, package, system_image)
+    if checkpoint:
+        checkpoint.validate(identity, dimensions)
+        dimensions = checkpoint.manifest["dimensions"]
     args.output.mkdir(parents=True, exist_ok=True)
     session = Path(
         tempfile.mkdtemp(
@@ -271,6 +294,10 @@ def audit(args):
         "body_limit": args.body_limit,
         "close_grace": None if is_ios else args.close_grace,
     }
+    if args.save_state:
+        metadata["save_state"] = True
+    if checkpoint:
+        metadata["restored_from"] = str(checkpoint.path)
     if is_ios:
         metadata["capture_scope"] = (
             "Executable paths within the owned Simulator; "
@@ -291,6 +318,15 @@ def audit(args):
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,
     )
+    if args.save_state or checkpoint:
+        print(
+            "State checkpoints contain whole-device private data, including credentials and "
+            "data outside domain filters. Only restore trusted checkpoints. "
+            "Disk state is preserved, not live screens or unsaved memory.",
+            flush=True,
+        )
+    if checkpoint:
+        print(f"Restoring state from: {checkpoint.path} (source remains unchanged)", flush=True)
     if args.output_har:
         print(
             "HAR enabled: intercepting all HTTP(S) hosts, including domains outside "
@@ -316,6 +352,8 @@ def audit(args):
     failure = None
     recording_failure = None
     cleanup_failure = None
+    state_failure = None
+    app_started = False
     try:
         with (
             tempfile.TemporaryDirectory(prefix="network-audit-") as temporary,
@@ -394,10 +432,21 @@ def audit(args):
                         args.headless,
                         system_image,
                         dimensions=dimensions,
+                        checkpoint=checkpoint,
+                        persist=args.save_state,
                     )
-                    print("Booting a disposable Android API 36 emulator…", flush=True)
+                    print(
+                        "Booting a restored Android API 36 emulator…" if checkpoint else
+                        "Booting a disposable Android API 36 emulator…",
+                        flush=True,
+                    )
                     emulator_process = emulator.start()
                     device = emulator
+                    if args.save_state or checkpoint:
+                        webview = emulator.webview_version()
+                        if checkpoint and webview != checkpoint.manifest.get("webview"):
+                            raise ValueError("Incompatible state checkpoint: WebView provider differs")
+                        metadata["webview"] = webview
                 device.install_ca(ca_dir / "mitmproxy-ca-cert.pem")
                 metadata["device"] = device.serial
                 save()
@@ -410,7 +459,9 @@ def audit(args):
                     print("Recording the device screen (no audio).", flush=True)
 
                 def launch_app():
+                    nonlocal app_started
                     device.launch(artifact, package, activity)
+                    app_started = True
                     if emulator:
                         foreground = emulator.foreground
                         wait_for(
@@ -503,6 +554,21 @@ def audit(args):
                             recording_failure = f"Could not save recording: {error}"
                             metadata["recording_failure"] = recording_failure
                             print(recording_failure, file=sys.stderr, flush=True)
+                    if args.save_state:
+                        try:
+                            if not emulator or not app_started:
+                                raise RuntimeError("App did not start; no state checkpoint is available")
+                            print("Powering off Android and saving state checkpoint…", flush=True)
+                            webview = emulator.webview_version()
+                            emulator.power_off(package)
+                            saved = save_checkpoint(
+                                emulator.avd_directory, session, identity, dimensions, webview
+                            )
+                            metadata["state_checkpoint"] = saved.name
+                        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+                            state_failure = f"Could not save state checkpoint: {error}"
+                            metadata["state_failure"] = state_failure
+                            print(state_failure, file=sys.stderr, flush=True)
                     try:
                         if simulator:
                             try:
@@ -539,6 +605,10 @@ def audit(args):
             metadata["state"] = "failed"
             metadata["failure"] = recording_failure
             failure = recording_failure
+        if state_failure and not failure:
+            metadata["state"] = "failed"
+            metadata["failure"] = state_failure
+            failure = state_failure
         if args.output_har:
             if (session / "session.har").is_file():
                 metadata["har"] = "session.har"
@@ -562,6 +632,8 @@ def audit(args):
             print(f"Video: {session / metadata['recording']}\n", flush=True)
         if "har" in metadata:
             print(f"HAR: {session / metadata['har']}\n", flush=True)
+        if "state_checkpoint" in metadata:
+            print(f"State: {session / metadata['state_checkpoint']}\n", flush=True)
         print(summary.read_text(), end="", flush=True)
     if failure:
         raise RuntimeError(failure)

@@ -61,6 +61,14 @@ remain explicit. See [scope and limits](network-audit/README.md#webview-ad-evide
 
 `--headless` hides the emulator window. `--record` adds a silent `recording.mp4` and a `Video:` line next to the report paths.
 
+On Android, `--save-state` also keeps a private cold-device checkpoint beside the
+report. Start another independent run with
+`--restore-state .network-audit/runs/<previous-session>`; add `--save-state` again
+to keep that run's final state. This preserves persisted app and WebView data,
+not live UI or unsaved memory. Use the exact same APK and pinned toolchain;
+checkpoints can consume several GiB and contain whole-device credentials and
+private data outside your domain filter. See [state checkpoint limits and usage](network-audit/README.md#save-state-and-start-another-run-from-it-android).
+
 Add `--har` to either manual or scenario runs to also save `session.har`
 and print its `HAR:` path. This captures all intercepted HTTP(S) hosts for the
 whole session, including hosts outside the domain filters; the existing reports,

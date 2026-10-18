@@ -681,6 +681,72 @@ evidence. The original network capture and text request summary are unchanged.
 
 ## Output and safety
 
+### Save state and start another run from it (Android)
+
+Use `--save-state` to keep a cold-device checkpoint beside the report. Use
+`--restore-state` with that run's directory (or its `state` subdirectory) to
+start an independent run from the saved state:
+
+```sh
+# Keep this exact APK for subsequent runs.
+network-audit /path/to/app.apk --domain api.example.com --save-state
+network-audit /path/to/app.apk --domain api.example.com \
+  --restore-state .network-audit/runs/<previous-session> --save-state
+```
+
+The second `--save-state` is optional. Without it, the restored working copy is
+discarded at the end, just like an ordinary run. The source checkpoint is never
+booted or modified, so several runs can start from the same baseline. Each run
+has a new report, proxy and session-only CA. Omitting both flags keeps the fresh,
+disposable-device behavior. These flags reject `--backend=ios`.
+
+This saves the virtual device's persisted data: app preferences, databases,
+files and disk caches; WebView cookies, localStorage, IndexedDB and disk caches;
+and the device storage used by Android permissions and Keystore. It is not a
+running-process snapshot: Flutter widget state, memory-only caches, live DOM/JS,
+open connections and WebView sessionStorage are not restored. Pending writes
+that the app or WebView has not persisted can be lost. Let important writes
+finish before ending a run; force-stop and filesystem sync cannot flush arbitrary
+application memory. Restoring a cookie does not revive an expired server session.
+
+On completion, Ctrl+C, SIGTERM, or a handled scenario failure after app launch,
+the tool stops recording first, force-stops the app, syncs the guest filesystem,
+requests Android poweroff and waits for the emulator to exit cleanly. It then
+uses the SDK's bundled `qemu-img` to flatten the writable userdata, encryption-key,
+cache and optional SD-card disk chains into independent sparse raw images.
+The final `state` directory is published only after conversion and checksumming
+finish. If the device has already exited, shutdown times out or saving fails,
+the command exits unsuccessfully and still writes the report, with a separate
+`state_failure` in `session.json`. SIGKILL or host failure cannot guarantee a
+checkpoint. A successful save prints `State: <run>/state`.
+
+Restoration requires the **exact APK bytes**, pinned emulator and system-image
+identity, host OS/CPU architecture, and matching virtual hardware. Keep a prebuilt
+APK: even a rebuilt app from the same source may have different bytes. An omitted
+display setting inherits the checkpoint's setting; an explicit conflicting setting
+is rejected. The active WebView provider is also checked. Incompatible, missing or
+corrupt state is an error, never a silent fresh-device fallback. Moving state from
+Linux x86_64 to Apple Silicon, updating the toolchain, or upgrading the app is not
+supported by this first format.
+
+`state/manifest.json` records format version, source run, creation time, app and
+toolchain identity, hardware, WebView provider, disk sizes and SHA-256 checksums.
+Checksums detect corruption; they do not authenticate the source. Restore only
+trusted checkpoints. Copy the **whole `state` directory**, retaining sparse files
+where your transfer tool supports it; ordinary copies can expand holes. Checkpoints
+can consume several GiB and add shutdown/copy time. Restoration checks temporary
+storage against the disks' logical sizes plus headroom; `--output` only moves the
+saved checkpoint/report, while `TMPDIR` controls the working device's filesystem.
+
+**State is whole-device data, not filtered by `--domain`.** It can contain login
+credentials, private files and identifiers not present in the report. The directory
+and its files are private, not encrypted. Do not commit or share it with a report
+unless you intend to share this additional data. Proxy private keys and live CA
+mounts are not reused. Cache entries remain subject to normal expiry/eviction;
+restoring them does not guarantee identical network traffic.
+
+### Session files
+
 Each run creates `.network-audit/runs/<UTC timestamp>-<unique suffix>/` with mode
 0700. `--output /some/directory` changes the parent directory. Files are created
 with a private umask:
@@ -713,6 +779,9 @@ with a private umask:
   diagnostics. Successful saves add `recording` to `session.json`; recording
   cleanup errors are kept separately as `recording_failure`, so an original
   audit/scenario failure is not lost.
+- `state/` (`--save-state`, Android): private cold-device disk checkpoint and
+  checksummed manifest. Successful saves add `state_checkpoint` to `session.json`;
+  restored runs record `restored_from`. Save failures record `state_failure`.
 - `scenario.log` (automated runs): scenario progress, assertion failures and
   Mobilewright errors. The resolved TOML `scenario` path, JavaScript `executor`
   path and timeout are in `session.json`. Its `domains` value is `null` for
@@ -728,7 +797,7 @@ sessions, not multi-gigabyte downloads, unbounded streams or load testing.
 **Reports and raw captures contain unredacted cookies, tokens, URLs and bodies.**
 Keep them private and inspect them before sharing. Do not commit captures.
 CA private keys are isolated in a temporary directory and are not part of the
-report; the temporary AVD, CA and proxy are removed/stopped on normal completion,
+report or state checkpoint; the temporary AVD, CA and proxy are removed/stopped on normal completion,
 Ctrl+C, SIGTERM or a handled failure. Existing AVDs and host trust stores are not
 changed. Like other processes, it cannot clean up after SIGKILL or host power
 loss; a new run never adopts or kills an older run's emulator.

@@ -51,6 +51,10 @@ in
     # Keep the audit in the foreground: oneshot tasks have a five-second
     # shutdown deadline that can interrupt cleanup and report generation.
     scripts.audit.exec = ''
+      # Offline commands must not enable/download an emulator image.
+      if [[ "''${1:-}" == list || "''${1:-}" == report ]]; then
+        exec network-audit "$@"
+      fi
       backend=android
       previous=
       for argument in "$@"; do

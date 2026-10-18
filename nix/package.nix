@@ -81,6 +81,9 @@ stdenvNoCC.mkDerivation {
     env -i HOME="$HOME" "$out/bin/network-audit" report session
     grep -F 'Packaged &lt;APK&gt;' session/report.html
     grep -F 'No matching HTTP exchanges captured' session/report.html
+    env -i HOME="$HOME" "$out/bin/network-audit" list --path session > listing.txt
+    grep -F 'Network audit | 1 runs' listing.txt
+    grep -F 'HTML: saved' listing.txt
 
     # A syntax diagnostic proves scenario preflight loaded its bundled runtime
     # without Node/npm on the caller's PATH or a source checkout/node_modules.

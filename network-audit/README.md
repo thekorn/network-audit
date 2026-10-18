@@ -8,6 +8,52 @@ Flutter app modification, proxy override or `badCertificateCallback` is needed.
 `--backend=ios` selects the experimental macOS-only backend described below.
 The Android workflow in the remaining sections is unchanged except where noted.
 
+## Browse saved runs
+
+```sh
+audit list                             # inside devenv; defaults to ./.network-audit
+audit list --path /path/to/.network-audit
+network-audit list --path /path/to/archive
+nix run .#network-audit-core -- list --path /path/to/.network-audit
+```
+
+This read-only terminal browser recursively finds directories containing a regular
+`session.json`, including older, interrupted, and malformed sessions. It does not
+start a device, proxy, or scenario. An explicit path may also be a run directory.
+A missing/non-directory path exits with an error without creating anything; an
+empty directory shows an empty list. Unreadable files/subtrees produce warnings,
+so their sizes may be incomplete. Press **r** to rescan after an active run changes.
+
+The list shows each run's relative path, **Disk** size, **HAR**, **State** (the
+`--save-state` device checkpoint), and **Video**. **Enter** opens full paths,
+metadata, all feature statuses, and per-file sizes. **↑/↓** or **j/k** scroll;
+**Page Up/Down** and **Home/End** (also **g/G**) jump; **Esc** returns; **q** quits.
+**s** toggles descending path order and largest-first order, retaining selection.
+At least 76 columns × 16 rows are needed. Piped output or a dumb terminal gets a
+plain-text listing instead, with no escape sequences.
+
+Feature statuses describe evidence on disk, not just the requested options:
+
+- **saved**: the expected artifact exists (for State, `state/manifest.json`).
+  This is not a content-integrity check or proof that a checkpoint can restore.
+- **partial**: a staged HAR, video, or state output remains.
+- **failed**: metadata records a failure and no output remains.
+- **missing**: metadata refers to a saved output that is gone, or a finished run
+  requested a state checkpoint but none remains.
+- **requested**: an unfinished run requested `--save-state`, with no output yet.
+- **-**: no evidence; this does not prove the option was disabled. Older metadata
+  does not always record enabled HAR/video options before finalization.
+
+Details also show HTML/text reports, raw flows, events, ad events, scenario use,
+and whether the run restored another checkpoint. Artifact sizes come from file
+metadata, not reading large HARs, videos, or disk images. **Disk** sums allocated
+file blocks; **logical** sums file lengths, which can be much larger for sparse
+checkpoint images. Directory overhead and symlinks are excluded. Hard links are
+counted once within each run; nested runs own their files rather than adding them
+to their parent's size. The overall total sums per-run sizes, not unrelated files
+under the chosen root; cross-run hard links and filesystem compression/reflinks
+can make it differ from space that deleting the runs would free.
+
 ## Experimental iOS Simulator backend
 
 **Product capture and recording verified on Apple Silicon with iOS 27 Simulator.**

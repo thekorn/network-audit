@@ -35,6 +35,131 @@ from state import Checkpoint, save_checkpoint
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ListRunsTest(unittest.TestCase):
+    def test_list_recurses_defaults_to_cwd_and_counts_allocated_data_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audits = root / ".network-audit"
+            run = audits / "archive" / "runs" / "older"
+            state = run / "state"
+            state.mkdir(parents=True)
+            metadata = run / "session.json"
+            metadata.write_text(json.dumps({
+                "app": "Private\x1b[31m app\nname", "state": "scenario completed",
+                "scenario": "browse.toml", "restored_from": "previous run",
+            }))
+            (run / "session.har").write_bytes(b"har fixture")
+            (state / "manifest.json").write_text("{}")
+            disk = state / "userdata-qemu.img"
+            with disk.open("wb") as output:
+                output.write(b"disk data")
+                output.truncate(64 * 1024 * 1024)
+            # A duplicate inode is not additional disk usage; links cannot pull
+            # external data into the run or cause recursive loops.
+            (run / "disk-hardlink").hardlink_to(disk)
+            (run / "external").symlink_to(root, target_is_directory=True)
+            external = root / "outside.mp4"
+            external.write_bytes(b"outside data")
+            (run / "recording.mp4").symlink_to(external)
+            nested = run / "nested run"
+            nested.mkdir()
+            (nested / "session.json").write_text("{")
+            (nested / "events.jsonl").write_bytes(b"{}\n")
+            (audits / "unrelated").write_bytes(b"not part of any run")
+            files = [metadata, run / "session.har", state / "manifest.json", disk]
+            allocated = sum(file.stat().st_blocks * 512 for file in files)
+            logical = sum(file.stat().st_size for file in files)
+            # Some filesystems allocate the full truncated length, others keep
+            # holes. The listing must use the filesystem's reported allocation.
+            self.assertNotEqual(allocated, logical)
+            before = {file: (file.stat().st_mtime_ns, file.stat().st_size) for file in files}
+            for options in ([], ["--path", str(audits)]):
+                with self.subTest(options=options):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "cli.py"), "list", *options],
+                        cwd=root, env={**os.environ, "PATH": ""},
+                        capture_output=True, text=True, check=True,
+                    )
+                    self.assertEqual(result.stderr, "")
+                    self.assertIn("Network audit | 2 runs", result.stdout)
+                    self.assertIn("Run: archive/runs/older\n", result.stdout)
+                    self.assertIn("Run: archive/runs/older/nested run\n", result.stdout)
+                    self.assertIn(f"({allocated} bytes)", result.stdout)
+                    self.assertIn(f"({logical} bytes)", result.stdout)
+                    self.assertIn("HAR: saved  State: saved  Video: -", result.stdout)
+                    self.assertIn("Scenario: yes  Restored: yes", result.stdout)
+                    self.assertIn("Warning: Cannot read session.json", result.stdout)
+                    self.assertIn("Private?[31m app?name", result.stdout)
+                    self.assertNotIn("\x1b", result.stdout)
+            self.assertEqual(before, {
+                file: (file.stat().st_mtime_ns, file.stat().st_size) for file in files
+            })
+            self.assertEqual(sorted(path.name for path in audits.iterdir()), ["archive", "unrelated"])
+
+    def test_list_distinguishes_artifacts_from_requested_failed_and_missing_outputs(self):
+        cases = (
+            ({}, (), "HAR: -  State: -  Video: -"),
+            ({"save_state": True}, (), "HAR: -  State: requested  Video: -"),
+            ({"save_state": True, "ended": "now"}, (), "HAR: -  State: missing  Video: -"),
+            ({"har": "session.har", "state_checkpoint": "state", "recording": "recording.mp4"},
+             (), "HAR: missing  State: missing  Video: missing"),
+            ({"har_failure": "failed", "state_failure": "failed", "recording_failure": "failed"},
+             (), "HAR: failed  State: failed  Video: failed"),
+            ({"har_failure": "failed"},
+             ("session.har.partial", ".state-staging/state/userdata-qemu.img", "recording.partial.mp4"),
+             "HAR: partial  State: partial  Video: partial"),
+            ({}, ("session.har", "state/manifest.json", "recording.mp4", "report.html", "report.txt",
+                  "flows.mitm", "events.jsonl", "ad-events.jsonl"),
+             "HAR: saved  State: saved  Video: saved  HTML: saved  Text: saved  Flows: saved  Events: saved  Ads: saved"),
+        )
+        for metadata, artifacts, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)
+                (path / "session.json").write_text(json.dumps(metadata))
+                for artifact in artifacts:
+                    file = path / artifact
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(b"fixture")
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "cli.py"), "list", "--path", str(path)],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn(expected, result.stdout)
+
+    def test_list_empty_invalid_and_missing_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            for options, code, message in (
+                ([], 1, "Audit directory not found"),
+                (["--path", str(path)], 0, "No audit runs found"),
+                (["--unknown"], 2, "unrecognized arguments"),
+                (["--help"], 0, "Browse saved audit runs recursively"),
+            ):
+                with self.subTest(options=options):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "cli.py"), "list", *options],
+                        cwd=path, capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, code)
+                    self.assertIn(message, result.stdout + result.stderr)
+                    self.assertFalse((path / ".network-audit").exists())
+            metadata = path / "session.json"
+            for invalid in (b"[]", b"null", b"\xff"):
+                metadata.write_bytes(invalid)
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "cli.py"), "list", "--path", str(path)],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn("Network audit | 1 runs", result.stdout)
+                self.assertIn("Cannot read session.json", result.stdout)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "cli.py"), "list", "--path", str(metadata)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not a directory", result.stderr)
+
+
 class AuditSessionTest(unittest.TestCase):
     def test_session_outcomes_preserve_reports(self):
         for outcome, state, options in (

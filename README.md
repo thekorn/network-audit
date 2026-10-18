@@ -113,6 +113,27 @@ The same regeneration, without the Android SDK, is:
 nix run .#network-audit-core -- report .network-audit/runs/<session>
 ```
 
+## Browse saved runs
+
+```bash
+devenv shell audit list
+devenv shell audit list --path /path/to/.network-audit
+# Without the Android SDK:
+nix run .#network-audit-core -- list --path /path/to/.network-audit
+```
+
+Opens a read-only terminal browser, recursively finding runs by `session.json`.
+Without `--path`, it looks in `./.network-audit` relative to your current directory.
+No emulator or proxy starts. Each row shows disk usage and HAR, saved device-state,
+and video status; press **Enter** for reports, flows, ad evidence, scenario/restore
+information, full paths, and per-file disk/logical sizes.
+
+Use **↑/↓** or **j/k**, **Page Up/Down**, and **Home/End** to navigate;
+**s** toggles largest-first sorting, **r** rescans, **Esc** goes back, and **q** quits.
+The terminal needs at least 76 columns and 16 rows. Redirected output is plain text.
+See [size accounting and feature status](network-audit/README.md#browse-saved-runs)
+for how partial runs and sparse checkpoints are handled.
+
 ## Run an audit from Nix
 
 ```bash

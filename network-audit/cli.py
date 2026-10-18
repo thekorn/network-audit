@@ -27,7 +27,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="network-audit", description=__doc__)
+    result = argparse.ArgumentParser(
+        prog="network-audit", description=__doc__,
+        epilog="Offline commands: list [--path .network-audit], report <session>",
+    )
     result.add_argument(
         "app", type=Path, help="Flutter project directory, Android APK, or iOS Simulator .app"
     )
@@ -651,6 +654,10 @@ def main():
     # A terminated automated run should still clean up and emit a partial report.
     signal.signal(signal.SIGTERM, interrupt)
     try:
+        if len(sys.argv) > 1 and sys.argv[1] == "list":
+            from listing import list_runs
+
+            return list_runs(sys.argv[2:])
         if len(sys.argv) > 1 and sys.argv[1] == "report":
             regenerate = argparse.ArgumentParser(
                 description="Regenerate HTML and text reports from an existing audit session"

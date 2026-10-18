@@ -1,9 +1,10 @@
-"""Read-only discovery and terminal browsing of saved audit runs."""
+"""Discover, browse, and explicitly delete saved audit runs."""
 
 import argparse
 import curses
 import json
 import os
+import shutil
 import stat
 import sys
 import textwrap
@@ -33,6 +34,7 @@ class Run:
     disk_bytes: int = 0
     logical_bytes: int = 0
     inodes: set = field(default_factory=set, repr=False)
+    identity: tuple[int, int] | None = None
 
     def artifact(self, names, *, partial=(), recorded=None, requested=None, failure=None):
         if all(name in self.files for name in names):
@@ -94,7 +96,12 @@ def scan(root: Path):
             except OSError as error:
                 unreadable(error)
         if "session.json" in entries:
-            owner = Run(path)
+            try:
+                info = path.stat(follow_symlinks=False)
+            except OSError as error:
+                unreadable(error)
+                continue
+            owner = Run(path, identity=(info.st_dev, info.st_ino))
             runs.append(owner)
             try:
                 metadata = json.loads((path / "session.json").read_text())
@@ -117,6 +124,37 @@ def scan(root: Path):
         directories[:] = sorted(name for name in directories if not (path / name).is_symlink())
         owners.update((path / name, owner) for name in directories)
     return sorted(runs, key=lambda run: run.path.as_posix(), reverse=True), warnings
+
+
+def delete_run(root, run):
+    """Recheck a confirmed selection; never follow links out of the run."""
+    path = run.path
+    if not path.is_relative_to(root) or path.resolve() != path:
+        raise ValueError("Run path changed or is outside the audit directory; refresh first")
+    info = path.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != run.identity:
+        raise ValueError("Run directory was replaced; refresh first")
+    current, warnings = scan(path)
+    if warnings:
+        raise ValueError("Cannot inspect the entire run; check permissions and refresh first")
+    if len(current) > 1:
+        raise ValueError("Contains nested runs; delete those first")
+    if not current or current[0].path != path:
+        raise ValueError("Run metadata is missing; refresh first")
+    metadata = current[0].metadata
+    if metadata.get("state") in ("starting", "capturing") and not metadata.get("ended"):
+        raise ValueError("Run is marked active; stop the capture before deleting it")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise ValueError("Safe directory deletion is unavailable on this platform")
+    # Pin the parent so a renamed/relinked ancestor cannot redirect rmtree.
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != run.identity:
+            raise ValueError("Run directory was replaced; refresh first")
+        shutil.rmtree(path.name, dir_fd=parent)
+    finally:
+        os.close(parent)
 
 
 def details(run):
@@ -188,6 +226,8 @@ def browse(screen, root, runs, warnings):
     selected = offset = 0
     expanded = False
     largest = False
+    pending = None
+    confirmation = message = ""
     while True:
         height, width = screen.getmaxyx()
         screen.erase()
@@ -211,11 +251,53 @@ def browse(screen, root, runs, warnings):
         heading = summary(root, runs, warnings)
         put(0, heading[0], curses.A_BOLD)
         put(1, heading[1], curses.A_DIM)
+        if pending is not None:
+            path_lines = []
+            remaining = display(pending.path)
+            while remaining:
+                line = clipped(remaining, width - 2)
+                path_lines.append(line)
+                remaining = remaining[len(line):]
+            fits = len(path_lines) <= height - 10
+            put(3, "Permanently delete this run?", curses.A_BOLD)
+            for row, line in enumerate(path_lines[:height - 10], 5):
+                put(row, line)
+            put(height - 5, "Deletes ALL files in this run, including checkpoints. No undo.")
+            put(height - 4, "Stop any capture first; stored status may be missing or stale.")
+            put(height - 3, f"Type DELETE then Enter: {confirmation}" if fits else
+                "Resize the terminal to see the full path before confirming.", curses.A_BOLD)
+            put(height - 1, "Esc or q: cancel")
+            screen.refresh()
+            key = screen.get_wch()
+            if key in ("\x1b", "q", "Q"):
+                pending = None
+                confirmation = ""
+                message = "Deletion cancelled."
+            elif key in ("\n", "\r", curses.KEY_ENTER) and fits and confirmation == "DELETE":
+                try:
+                    delete_run(root, pending)
+                    message = f"Deleted: {pending.path.name}"
+                except ValueError as error:
+                    message = f"Not deleted: {error}"
+                except OSError as error:
+                    # A filesystem failure can happen after removing some files.
+                    message = f"Delete failed (check remaining files): {error}"
+                pending = None
+                confirmation = ""
+                expanded = False
+                offset = 0
+                runs, warnings = scan(root) if root.exists() else ([], [])
+                runs.sort(key=lambda run: (run.disk_bytes if largest else 0, run.path.as_posix()), reverse=True)
+            elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+                confirmation = confirmation[:-1]
+            elif isinstance(key, str) and key.isprintable() and len(confirmation) < 32:
+                confirmation += key
+            continue
         page = max(1, height - 12)
         lines = []
         if expanded and runs:
             lines = [part for line in details(runs[selected]) for part in textwrap.wrap(line, max(1, width - 2)) or [""]]
-            page = max(1, height - 5)
+            page = max(1, height - 5 - (2 if message else 0))
             offset = min(offset, max(0, len(lines) - page))
             for row, line in enumerate(lines[offset:offset + page], 3):
                 put(row, line)
@@ -244,21 +326,27 @@ def browse(screen, root, runs, warnings):
                 put(height - 3, f"Warning: {warnings[0]} ({len(warnings)} scan warnings)", curses.A_BOLD)
             else:
                 put(height - 3, "saved = present, not validated; - = no evidence. Sizes exclude symlinks.", curses.A_DIM)
-        put(height - 2, f"{selected + 1 if runs else 0}/{len(runs)} | Sort: {'largest first' if largest else 'path descending'} | Read-only", curses.A_DIM)
-        put(height - 1, "Up/Down j/k: scroll | Enter/Esc: details/back | s: sort | r: refresh | q: quit")
+        if message:
+            put(height - 4, message, curses.A_BOLD)
+        put(height - 2, f"{selected + 1 if runs else 0}/{len(runs)} | Sort: {'largest first' if largest else 'path descending'}", curses.A_DIM)
+        put(height - 1, "j/k: move | Enter/Esc: details | d: delete | s: sort | r: refresh | q: quit")
         screen.refresh()
         key = screen.get_wch()
         if key in ("q", "Q"):
             return
-        if key in ("\n", "\r", curses.KEY_ENTER, "\x1b"):
+        if key == "d" and runs:
+            pending = runs[selected]
+            confirmation = message = ""
+        elif key in ("\n", "\r", curses.KEY_ENTER, "\x1b"):
             expanded = not expanded if key != "\x1b" else False
             offset = 0
+            message = ""
         elif key in ("r", "s"):
             current = runs[selected].path if runs else None
             if key == "r":
                 put(0, "Scanning audit runs...", curses.A_BOLD)
                 screen.refresh()
-                runs, warnings = scan(root)
+                runs, warnings = scan(root) if root.exists() else ([], [])
             else:
                 largest = not largest
             runs.sort(key=lambda run: (run.disk_bytes if largest else 0, run.path.as_posix()), reverse=True)

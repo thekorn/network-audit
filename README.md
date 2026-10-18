@@ -122,7 +122,7 @@ devenv shell audit list --path /path/to/.network-audit
 nix run .#network-audit-core -- list --path /path/to/.network-audit
 ```
 
-Opens a read-only terminal browser, recursively finding runs by `session.json`.
+Opens a terminal browser, recursively finding runs by `session.json`.
 Without `--path`, it looks in `./.network-audit` relative to your current directory.
 No emulator or proxy starts. Each row shows disk usage and HAR, saved device-state,
 and video status; press **Enter** for reports, flows, ad evidence, scenario/restore
@@ -130,6 +130,10 @@ information, full paths, and per-file disk/logical sizes.
 
 Use **↑/↓** or **j/k**, **Page Up/Down**, and **Home/End** to navigate;
 **s** toggles largest-first sorting, **r** rescans, **Esc** goes back, and **q** quits.
+Press **d** to delete the selected run: check the full path, then type **DELETE**
+and press **Enter**. **Esc** cancels. This permanently removes the run and all its
+files, including saved device state. Stop the capture first; runs marked active
+and runs containing other runs are refused.
 The terminal needs at least 76 columns and 16 rows. Redirected output is plain text.
 See [size accounting and feature status](network-audit/README.md#browse-saved-runs)
 for how partial runs and sparse checkpoints are handled.

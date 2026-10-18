@@ -17,7 +17,7 @@ network-audit list --path /path/to/archive
 nix run .#network-audit-core -- list --path /path/to/.network-audit
 ```
 
-This read-only terminal browser recursively finds directories containing a regular
+This terminal browser recursively finds directories containing a regular
 `session.json`, including older, interrupted, and malformed sessions. It does not
 start a device, proxy, or scenario. An explicit path may also be a run directory.
 A missing/non-directory path exits with an error without creating anything; an
@@ -31,6 +31,21 @@ metadata, all feature statuses, and per-file sizes. **↑/↓** or **j/k** scrol
 **s** toggles descending path order and largest-first order, retaining selection.
 At least 76 columns × 16 rows are needed. Piped output or a dumb terminal gets a
 plain-text listing instead, with no escape sequences.
+
+Press **d** in the list or details to delete the selected run. The confirmation
+shows its full path; type **DELETE** exactly and press **Enter**, or **Esc/q** to
+cancel. Deletion is permanent, not a move to trash: the whole run directory,
+including reports, HAR, recording, and saved device state, is removed. The list
+and disk totals refresh afterwards. Piped output cannot delete anything.
+
+Stop the capture before deleting a run. Runs still marked `starting`/`capturing`
+without an end time are refused; stored status is not a process-liveness check,
+and may be missing or stale. Malformed/legacy runs can still be deleted after
+confirmation. Nested runs must be deleted individually before their parent.
+The selection is rechecked at confirmation: replaced directories, linked paths,
+missing run metadata, and unreadable subtrees are refused. Links inside a run
+are removed without deleting their targets. Filesystem errors are reported;
+deletion is not atomic and may leave a partially removed run.
 
 Feature statuses describe evidence on disk, not just the requested options:
 

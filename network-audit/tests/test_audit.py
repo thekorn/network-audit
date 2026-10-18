@@ -27,6 +27,7 @@ from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
 from ios import SimulatorRecording, app_identity, build_app, check_simulator
+from listing import browse, scan
 from recording import ScreenRecording
 from report import generate_report, read_events
 from scenario import RUNNER, run_scenario, validate_executor
@@ -36,6 +37,95 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ListRunsTest(unittest.TestCase):
+    def browse(self, root, keys):
+        root = root.resolve()
+        runs, warnings = scan(root)
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 100)
+        screen.get_wch.side_effect = keys
+        output = []
+        screen.addstr.side_effect = lambda _row, _column, text, _attribute: output.append(text)
+        with patch("listing.curses.curs_set"), patch("listing.curses.set_escdelay"):
+            browse(screen, root, runs, warnings)
+        return "\n".join(output)
+
+    def test_delete_requires_confirmation_and_removes_only_selected_run(self):
+        for prefix, confirmed in (
+            (["d", "\n", "\x1b"], False),
+            (["\n", "d", *"delete", "\n", "\x1b"], False),
+            (["d", *"DELETEextra", "\n", "\x1b"], False),
+            (["d", *"DELETE", "\x1b"], False),
+            (["\n", "d", *"DELETX", "\x7f", "E", "\n"], True),
+        ):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                selected = root / "z-run"
+                sibling = root / "a-run"
+                for path in (selected, sibling):
+                    path.mkdir()
+                    (path / "session.json").write_text('{"state":"scenario completed","ended":"now"}')
+                    (path / "session.har").write_bytes(b"private capture")
+                state = selected / "state"
+                state.mkdir()
+                (state / "disk.img").write_bytes(b"private device data")
+                (selected / "external").symlink_to(sibling, target_is_directory=True)
+                output = self.browse(root, [*prefix, "q"])
+                self.assertEqual(selected.exists(), not confirmed)
+                self.assertEqual((sibling / "session.har").read_bytes(), b"private capture")
+                self.assertIn("Permanently delete this run?", output)
+                self.assertIn("Deleted: z-run" if confirmed else "Deletion cancelled.", output)
+                if confirmed:
+                    self.assertIn("Network audit | 1 runs", output)
+                else:
+                    self.assertEqual((state / "disk.img").read_bytes(), b"private device data")
+
+    def test_delete_rechecks_active_nested_replaced_and_linked_runs_at_confirmation(self):
+        for change in ("active", "nested", "replaced", "linked", "metadata missing"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                run = root / "run"
+                run.mkdir()
+                (run / "session.json").write_text('{"state":"completed","ended":"now"}')
+                (run / "session.har").write_bytes(b"keep me")
+
+                def keys():
+                    yield "d"
+                    yield from "DELETE"
+                    if change == "active":
+                        (run / "session.json").write_text('{"state":"capturing"}')
+                    elif change == "nested":
+                        nested = run / "nested"
+                        nested.mkdir()
+                        (nested / "session.json").write_text("{}")
+                    elif change in ("replaced", "linked"):
+                        original = root / "original"
+                        run.rename(original)
+                        if change == "replaced":
+                            run.mkdir()
+                            (run / "session.json").write_text("{}")
+                            (run / "session.har").write_bytes(b"keep me")
+                        else:
+                            run.symlink_to(original, target_is_directory=True)
+                    else:
+                        (run / "session.json").unlink()
+                    yield "\n"
+                    yield "q"
+
+                output = self.browse(root, keys())
+                self.assertEqual((run / "session.har").read_bytes(), b"keep me")
+                self.assertIn("Not deleted:", output)
+
+    def test_delete_last_run_when_path_is_the_run_itself(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            run.mkdir()
+            # Malformed/legacy runs can be cleaned up with explicit confirmation.
+            (run / "session.json").write_text("{")
+            output = self.browse(run, ["d", *"DELETE", "\n", "r", "q"])
+            self.assertFalse(run.exists())
+            self.assertIn("Deleted: run", output)
+            self.assertIn("No audit runs found", output)
+
     def test_list_recurses_defaults_to_cwd_and_counts_allocated_data_without_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

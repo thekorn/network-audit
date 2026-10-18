@@ -2166,6 +2166,18 @@ class CheckpointTest(unittest.TestCase):
                 (clone / "userdata-qemu.img").write_bytes(b"mutated working copy")
                 for disk, expected in disks.items():
                     self.assertEqual((saved / disk).read_bytes(), expected)
+            # Saving a restored run must keep its changes, not reuse its parent.
+            next_run = root / "run-b"
+            next_run.mkdir()
+            next_state = save_checkpoint(clone, next_run, identity, None, "WebView fixture")
+            descendant = root / "descendant"
+            descendant.mkdir()
+            shutil.copyfile(avd / "config.ini", descendant / "config.ini")
+            Checkpoint(next_state).restore(descendant)
+            self.assertEqual((descendant / "userdata-qemu.img").read_bytes(), b"mutated working copy")
+            self.assertEqual((descendant / "encryptionkey.img").read_bytes(), disks["encryptionkey.img"])
+            self.assertEqual((descendant / "cache.img").read_bytes(), disks["cache.img"])
+            self.assertEqual((saved / "userdata-qemu.img").read_bytes(), disks["userdata-qemu.img"])
             # Same-size corruption must not pass the manifest's length check.
             (saved / "cache.img").write_bytes(b"Cached response")
             with self.assertRaisesRegex(ValueError, "corrupt: cache.img"):

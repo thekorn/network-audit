@@ -757,15 +757,20 @@ network-audit /path/to/MyApp.app --backend=ios --domain api.example.com \
   --restore-state .network-audit/runs/<previous-session> --save-state
 ```
 
-**Native acceptance is pending.** Linux tests cover checkpoint file integrity,
-independent copies, successive generations, lifecycle failures and reports with
-substituted CoreSimulator/ditto boundaries. They do not establish that a real
-Simulator boots after archive relocation or that Keychain/WebKit data survives.
-Do not rely on this format as your only backup.
+**Native saving is verified; restoration is not yet reliable.** On Apple Silicon
+with macOS 27/iOS 27, saving completes and the archived files pass integrity
+checks. A restored Simulator boots, but the sample app fails to launch: its app
+registration still points to the deleted source Simulator. Do not rely on these
+checkpoints as usable restart points or as your only backup. Automated tests
+cover integrity, independent copies, generations and lifecycle failures with
+substituted CoreSimulator boundaries (and real `ditto` on macOS); they do not
+prove native app, Keychain or WebKit restoration.
 
 Saving shuts down the owned Simulator, clones it into a temporary device set,
-then copies that dormant set into `state/device-set` using macOS `ditto` to retain
-permissions, links, extended attributes and ACLs. The private `state` directory
+waits for the clone's metadata to be published, then copies that dormant set into
+`state/device-set` using macOS `ditto` to retain permissions, links, extended
+attributes and ACLs. Directory sticky bits dropped by non-root `ditto` are
+restored before integrity checking. The private `state` directory
 is published only after checking file contents, modes and link targets. The
 manifest records SHA-256 file checksums, app and toolchain identity, and the
 saved device UUID. As on Android, failures retain the report and record

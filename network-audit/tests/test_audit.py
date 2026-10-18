@@ -219,7 +219,7 @@ class AuditSessionTest(unittest.TestCase):
                 if state_saved:
                     self.assertEqual(metadata["state_checkpoint"], "state")
                     self.assertTrue((session / "state").is_dir())
-                    self.assertIn(f"State: {session / 'state'}", output.getvalue().splitlines())
+                    self.assertIn(f"State: {(session / 'state').resolve()}", output.getvalue().splitlines())
                 else:
                     self.assertNotIn("state_checkpoint", metadata)
                     self.assertFalse((session / "state").exists())
@@ -1256,7 +1256,7 @@ class IOSBackendTest(unittest.TestCase):
                         self.assertIn("state_failure", metadata)
                         self.assertFalse((session / "state").exists())
                 if restore_state:
-                    self.assertEqual(metadata["restored_from"], str(baseline / "state"))
+                    self.assertEqual(metadata["restored_from"], str((baseline / "state").resolve()))
                     original = IOSCheckpoint(baseline)
                     original.validate(identity)
                     self.assertEqual((original.device_set / owned / "data/preferences").read_text(), "saved app data")
@@ -2356,9 +2356,9 @@ class IOSCheckpointTest(unittest.TestCase):
                     ios_checkpoint_identity(app, "test.app", ("runtime", "phone", "ui"))
 
     @contextmanager
-    def saved_state(self):
-        # Only CoreSimulator cloning and macOS ditto are substituted. These tests
-        # exercise archive IO/validation, not native Keychain or WebKit behavior.
+    def saved_state(self, *, delayed_metadata=False):
+        # Substitute CoreSimulator and, off macOS, ditto. These tests exercise
+        # archive IO/validation, not native Keychain or WebKit behavior.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             default_set = root / "default-set"
@@ -2373,17 +2373,27 @@ class IOSCheckpointTest(unittest.TestCase):
             (data / "executable").chmod(0o755)
             (data / "database-link").symlink_to("database")
             (data / "empty").mkdir()
+            (data / "staging").mkdir(mode=0o1731)
+            (data / "staging").chmod(0o1731)
             source = Mock(serial=serial)
             source.name = "audit-source"
             identity = {"package": "test.app", "app_sha256": "app", "runtime": "runtime", "device_type": "phone"}
             tool = Mock()
+            writers = []
 
             def clone(source_set, destination_set, source_serial, _name):
                 source_set = default_set if source_set is None else source_set
                 destination_set = default_set if destination_set is None else destination_set
                 identifier = str(uuid.uuid4()).upper()
                 shutil.copytree(source_set / source_serial, destination_set / identifier, symlinks=True)
-                (destination_set / identifier / "device.plist").write_bytes(plistlib.dumps({"UDID": identifier}))
+                metadata = destination_set / identifier / "device.plist"
+                metadata.write_bytes(plistlib.dumps({"UDID": identifier}))
+                if delayed_metadata:
+                    pending = metadata.with_suffix(".plist.sb-pending")
+                    metadata.rename(pending)
+                    writer = threading.Timer(0.1, pending.rename, args=(metadata,))
+                    writers.append(writer)
+                    writer.start()
                 # Opening a device set can write metadata even when only cloning
                 # FROM it. Accidentally opening the saved set must fail immutability.
                 (source_set / "device_set.plist").write_text("opened by CoreSimulator")
@@ -2391,15 +2401,34 @@ class IOSCheckpointTest(unittest.TestCase):
 
             def ditto(command, **_kwargs):
                 self.assertEqual(command[0], "/usr/bin/ditto")
-                shutil.copytree(command[-2], command[-1], symlinks=True)
+                if sys.platform == "darwin":
+                    subprocess.run(command, check=True, capture_output=True, timeout=30)
+                else:
+                    shutil.copytree(command[-2], command[-1], symlinks=True)
+                    # Native ditto drops the sticky bit from Simulator directories.
+                    for staging in Path(command[-1]).glob("*/data/staging"):
+                        staging.chmod(0o731)
                 return ""
 
             tool.clone.side_effect = clone
             session = root / "run-a"
             session.mkdir()
-            with patch("ios_state.run", side_effect=ditto):
-                saved = save_ios_checkpoint(source, session, identity, tool)
-                yield root, default_set, source, saved, identity, tool
+            try:
+                with patch("ios_state.run", side_effect=ditto):
+                    saved = save_ios_checkpoint(source, session, identity, tool)
+                    yield root, default_set, source, saved, identity, tool
+            finally:
+                for writer in writers:
+                    writer.cancel()
+                    writer.join()
+
+    def test_save_waits_for_cloned_device_metadata_to_be_published(self):
+        with self.saved_state(delayed_metadata=True) as (_root, _default_set, _source, saved, identity, _tool):
+            checkpoint = IOSCheckpoint(saved)
+            checkpoint.validate(identity)
+            device = checkpoint.device_set / checkpoint.serial
+            self.assertEqual(plistlib.loads((device / "device.plist").read_bytes())["UDID"], checkpoint.serial)
+            self.assertEqual(list(device.glob("device.plist.sb-*")), [])
 
     def test_restore_survives_original_deletion_and_keeps_independent_generations(self):
         with self.saved_state() as (root, default_set, source, saved, identity, tool):
@@ -2423,6 +2452,7 @@ class IOSCheckpointTest(unittest.TestCase):
                 self.assertEqual(os.readlink(data / "database-link"), "database")
                 self.assertEqual((data / "executable").stat().st_mode & 0o777, 0o755)
                 self.assertTrue((data / "empty").is_dir())
+                self.assertEqual((data / "staging").stat().st_mode & 0o7777, 0o1731)
                 (data / "preferences").write_bytes(b"consent=rejected")
                 self.assertEqual((original / "preferences").read_bytes(), b"consent=accepted")
                 self.assertEqual((checkpoint.path / "manifest.json").read_bytes(), original_manifest)
@@ -2450,7 +2480,7 @@ class IOSCheckpointTest(unittest.TestCase):
                 Checkpoint(saved)
             data = checkpoint.device_set / checkpoint.serial / "data"
             simulator = Simulator("invalid", StringIO(), True, ("runtime", "phone", "ui"))
-            for change in ("bytes", "link", "mode", "missing", "extra", "manifest"):
+            for change in ("bytes", "link", "mode", "sticky", "missing", "extra", "manifest"):
                 with self.subTest(change=change), tempfile.TemporaryDirectory(dir=root) as temporary:
                     damaged = Path(temporary) / "state"
                     shutil.copytree(saved, damaged, symlinks=True)
@@ -2462,6 +2492,8 @@ class IOSCheckpointTest(unittest.TestCase):
                         (changed_data / "database").symlink_to(data / "database")
                     elif change == "mode":
                         (changed_data / "executable").chmod(0o644)
+                    elif change == "sticky":
+                        (changed_data / "staging").chmod(0o731)
                     elif change == "missing":
                         (changed_data / "database").unlink()
                     elif change == "extra":

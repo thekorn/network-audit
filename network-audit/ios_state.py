@@ -17,7 +17,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from android import run
+from android import run, wait_for
 from state import file_digest
 
 
@@ -101,7 +101,7 @@ class CloneTool:
         return str(uuid.UUID(identifier)).upper()
 
 
-def copy_device_set(source, destination):
+def copy_device_set(source, destination, entries):
     # shutil.copytree does not preserve all macOS metadata. Explicit flags also
     # override a caller's DITTONORSRC. Neither endpoint may be a symlink.
     if source.is_symlink() or not source.is_dir() or destination.exists() or destination.is_symlink():
@@ -109,6 +109,14 @@ def copy_device_set(source, destination):
     run([
         "/usr/bin/ditto", "--rsrc", "--extattr", "--acl", str(source), str(destination),
     ], timeout=600)
+    # Non-root ditto drops directory sticky bits (e.g. .DocumentRevisions-V100
+    # staging). Restore only that bit; callers still verify every entry/mode.
+    for relative, entry in entries.items():
+        if entry["kind"] == "directory" and entry["mode"] & stat.S_ISVTX:
+            copied = destination / relative
+            mode = copied.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                copied.chmod(stat.S_IMODE(mode) | stat.S_ISVTX, follow_symlinks=False)
 
 
 class Checkpoint:
@@ -165,7 +173,7 @@ class Checkpoint:
             if shutil.disk_usage(temporary).free < required + 1024**3:
                 raise RuntimeError("Insufficient temporary storage to restore iOS state checkpoint")
             # Do not let even the clone operation open the saved set itself.
-            copy_device_set(self.device_set, working)
+            copy_device_set(self.device_set, working, self.manifest["entries"])
             self.verify(working)
             simulator.clone(tool, working, self.serial)
 
@@ -183,6 +191,12 @@ def save_checkpoint(simulator, session, identity, tool):
         live_set = Path(temporary) / "device-set"
         live_set.mkdir(mode=0o700)
         serial = tool.clone(None, live_set, simulator.serial, f"{simulator.name}-checkpoint")
+        # CoreSimulator can return before its atomic device.plist write finishes.
+        # Do not hash/copy the transient device.plist.sb-* in place of metadata.
+        wait_for(
+            lambda: (live_set / serial / "device.plist").is_file(),
+            "cloned Simulator metadata before checkpoint", timeout=60,
+        )
         staged = Path(staging) / "state"
         staged.mkdir(mode=0o700)
         archived = staged / "device-set"
@@ -190,7 +204,7 @@ def save_checkpoint(simulator, session, identity, tool):
         required = sum(entry.get("size", 0) for entry in entries.values())
         if shutil.disk_usage(session).free < required + 1024**3:
             raise RuntimeError("Insufficient storage to save iOS state checkpoint")
-        copy_device_set(live_set, archived)
+        copy_device_set(live_set, archived, entries)
         if tree_manifest(archived) != entries:
             raise ValueError("iOS checkpoint copy is incomplete")
         manifest = {

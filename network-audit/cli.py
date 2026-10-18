@@ -340,7 +340,8 @@ def audit(args):
             print(
                 "Experimental iOS checkpoints use private CoreSimulator cloning APIs. "
                 "Previous audit CA trust entries remain; proxy private keys are not saved. "
-                "Native checkpoint round-trip acceptance is still pending.",
+                "Restored apps may retain paths to the deleted source Simulator and fail "
+                "to launch; native save/restore round trips are not yet reliable.",
                 flush=True,
             )
     if restored:

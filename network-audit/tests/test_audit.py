@@ -30,6 +30,7 @@ from ios import SimulatorRecording, app_identity, build_app, check_simulator
 from recording import ScreenRecording
 from report import generate_report, read_events
 from scenario import RUNNER, run_scenario, validate_executor
+from state import Checkpoint, save_checkpoint
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +51,13 @@ class AuditSessionTest(unittest.TestCase):
             ("recording stopped", "failed", ["--record"]),
             ("recording save failure", "failed", ["--record"]),
             ("launch and recording failure", "failed", ["--record"]),
+            ("background", "app closed", ["--save-state", "--record"]),
+            ("capture interrupt", "interrupted by user", ["--save-state"]),
+            ("launch failure", "failed", ["--save-state"]),
+            ("proxy failure", "failed", ["--save-state"]),
+            ("state save failure", "failed", ["--save-state"]),
+            ("state poweroff failure", "failed", ["--save-state"]),
+            ("closed", "failed", ["--save-state"]),
         ):
             with (
                 self.subTest(outcome=outcome, options=options),
@@ -79,13 +87,18 @@ class AuditSessionTest(unittest.TestCase):
                 proxy.poll.return_value = None
                 device = Mock()
                 device.serial = "emulator-5554"
+                device.webview_version.return_value = "Current WebView package: fixture"
                 device.start.return_value.poll.return_value = (
                     0 if outcome == "closed" else None
                 )
+                if outcome in ("state poweroff failure", "closed"):
+                    device.power_off.side_effect = RuntimeError("Guest poweroff failed")
                 elapsed = [0]
 
                 def sleep(seconds):
                     elapsed[0] += seconds
+                    if outcome == "capture interrupt":
+                        raise KeyboardInterrupt
                     self.assertLess(
                         elapsed[0], 10, "Capture did not finish after leaving the app"
                     )
@@ -140,6 +153,14 @@ class AuditSessionTest(unittest.TestCase):
                         result.check.side_effect = RuntimeError("encoder exited")
                     return result
 
+                def save_state(_directory, session, *_args):
+                    self.assertIn("--save-state", options, "Saving state must be opt-in")
+                    if outcome == "state save failure":
+                        raise OSError("checkpoint disk full")
+                    saved = session / "state"
+                    saved.mkdir()
+                    return saved
+
                 def start_proxy(*_args, **kwargs):
                     session = Path(kwargs["env"]["NETWORK_AUDIT_SESSION"])
                     (session / "proxy.ready").touch()
@@ -171,6 +192,9 @@ class AuditSessionTest(unittest.TestCase):
                     patch("cli.time.sleep", side_effect=sleep),
                     patch("cli.time.monotonic", side_effect=lambda: elapsed[0]),
                     patch("cli.ScreenRecording", side_effect=recorder),
+                    patch("cli.checkpoint_identity", return_value={"package": "org.example.app"}),
+                    patch("cli.image_tool"),
+                    patch("cli.save_checkpoint", side_effect=save_state),
                     redirect_stderr(StringIO()) as errors,
                     redirect_stdout(StringIO()) as output,
                 ):
@@ -186,6 +210,19 @@ class AuditSessionTest(unittest.TestCase):
                 self.assertEqual(metadata["body_limit"], 37)
                 self.assertEqual(metadata["device"], "emulator-5554")
                 self.assertIn("ended", metadata)
+                state_saved = "--save-state" in options and outcome in (
+                    "background", "capture interrupt", "proxy failure"
+                )
+                if state_saved:
+                    self.assertEqual(metadata["state_checkpoint"], "state")
+                    self.assertTrue((session / "state").is_dir())
+                    self.assertIn(f"State: {session / 'state'}", output.getvalue().splitlines())
+                else:
+                    self.assertNotIn("state_checkpoint", metadata)
+                    self.assertFalse((session / "state").exists())
+                    self.assertNotIn("State:", output.getvalue())
+                if "--save-state" in options and not state_saved:
+                    self.assertIn("Could not save state checkpoint", metadata["state_failure"])
                 self.assertNotIn("emulator", running)
                 self.assertNotIn("recording", running)
                 if outcome != "proxy failure":
@@ -439,6 +476,9 @@ class AuditSessionTest(unittest.TestCase):
                 ([str(apk), "--flavor", "staging"], "requires a Flutter project, not an APK"),
                 ([str(root), "--flavor", ""], "must be a non-blank identifier"),
                 ([str(root), "--flavor", "  "], "must be a non-blank identifier"),
+                ([str(apk), "--backend=ios", "--save-state"], "Android-only"),
+                ([str(apk), "--backend=ios", "--restore-state", str(root)], "Android-only"),
+                ([str(apk), "--restore-state", str(root)], "Cannot read a complete state checkpoint"),
             ]
             for path in (root / "missing.json", root, ""):
                 cases.append(
@@ -2071,6 +2111,118 @@ class EmulatorPreflightTest(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, message),
             ):
                 check_emulator()
+
+
+class CheckpointTest(unittest.TestCase):
+    @contextmanager
+    def saved_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            avd = root / "source-avd"
+            avd.mkdir()
+            (avd / "config.ini").write_text("hw.ramSize=2048\ndisk.dataPartition.size=6G\n")
+            disks = {
+                "userdata-qemu.img": b"first" + bytes(2 * 1024 * 1024) + b"last",
+                "encryptionkey.img": b"different key data",
+                "cache.img": b"cached response",
+            }
+            for name, data in disks.items():
+                (avd / name).write_bytes(data)
+            # The writable overlay, not its stale base, contains the final data.
+            (avd / "userdata-qemu.img").write_bytes(b"old base data")
+            (avd / "userdata-qemu.img.qcow2").write_bytes(disks["userdata-qemu.img"])
+            (avd / "hardware-qemu.ini").write_text("host-only paths")
+            (avd / "snapshot.lock").touch()
+            session = root / "run-a"
+            session.mkdir()
+            identity = {"package": "test.app", "apk_sha256": "fixture", "architecture": "x86_64"}
+            # Disk conversion is the native boundary; the runner additionally
+            # tests real QCOW2 chains and actual app/WebView/Keystore roundtrips.
+            def convert(command, **_kwargs):
+                shutil.copyfile(command[-2], command[-1])
+                return ""
+
+            with (
+                patch("state.image_tool", return_value=Path("qemu-img")),
+                patch("state.run", side_effect=convert),
+            ):
+                saved = save_checkpoint(avd, session, identity, None, "WebView fixture")
+                yield root, avd, saved, identity, disks
+
+    def test_restore_is_independent_repeatable_and_rejects_corruption(self):
+        with self.saved_state() as (root, avd, saved, identity, disks):
+            self.assertEqual(set(path.name for path in saved.iterdir()), {*disks, "manifest.json"})
+            self.assertEqual(saved.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(all(path.stat().st_mode & 0o777 == 0o600 for path in saved.iterdir()))
+            checkpoint = Checkpoint(saved.parent)
+            checkpoint.validate(identity, None)
+            for name in ("clone-one", "clone-two"):
+                clone = root / name
+                clone.mkdir()
+                shutil.copyfile(avd / "config.ini", clone / "config.ini")
+                checkpoint.restore(clone)
+                for disk, expected in disks.items():
+                    self.assertEqual((clone / disk).read_bytes(), expected)
+                (clone / "userdata-qemu.img").write_bytes(b"mutated working copy")
+                for disk, expected in disks.items():
+                    self.assertEqual((saved / disk).read_bytes(), expected)
+            # Same-size corruption must not pass the manifest's length check.
+            (saved / "cache.img").write_bytes(b"Cached response")
+            with self.assertRaisesRegex(ValueError, "corrupt: cache.img"):
+                Checkpoint(saved).restore(clone)
+
+    def test_incompatible_unsafe_and_incomplete_checkpoints_fail_closed(self):
+        with self.saved_state() as (root, avd, saved, identity, _disks):
+            checkpoint = Checkpoint(saved)
+            for field in ("package", "apk_sha256", "architecture"):
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                    checkpoint.validate({**identity, field: "different"}, None)
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                checkpoint.validate(identity, {"width": 720, "height": 1600, "density": 240})
+            (avd / "config.ini").write_text("hw.ramSize=4096\n")
+            with self.assertRaisesRegex(ValueError, "hardware configuration"):
+                checkpoint.restore(avd)
+            manifest_path = saved / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest_path.write_text(json.dumps({**manifest, "files": {}}))
+            with self.assertRaisesRegex(ValueError, "Invalid state checkpoint manifest"):
+                Checkpoint(saved)
+            for name in ("../escape.img", "/absolute.img", "hardware-qemu.ini"):
+                with self.subTest(name=name):
+                    modified = {**manifest, "files": {**manifest["files"], name: manifest["files"]["cache.img"]}}
+                    manifest_path.write_text(json.dumps(modified))
+                    with self.assertRaisesRegex(ValueError, "disk entry"):
+                        Checkpoint(saved)
+            manifest_path.write_text(json.dumps(manifest))
+            cache = saved / "cache.img"
+            cache.unlink()
+            cache.symlink_to(avd / "cache.img")
+            with self.assertRaisesRegex(ValueError, "missing or incomplete"):
+                Checkpoint(saved)
+            with self.assertRaisesRegex(ValueError, "Cannot read a complete"):
+                Checkpoint(root / "missing")
+
+    def test_failed_save_never_publishes_a_checkpoint(self):
+        with self.saved_state() as (root, avd, saved, identity, disks):
+            failed = root / "failed-run"
+            failed.mkdir()
+
+            def partial_conversion(command, **_kwargs):
+                shutil.copyfile(command[-2], command[-1])
+                if Path(command[-1]).name == "encryptionkey.img":
+                    raise OSError("disk full")
+                return ""
+
+            with (
+                patch("state.run", side_effect=partial_conversion),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                save_checkpoint(avd, failed, identity, None, "WebView fixture")
+            self.assertEqual(list(failed.iterdir()), [])
+            with self.assertRaisesRegex(ValueError, "Refusing to replace"):
+                save_checkpoint(avd, saved.parent, identity, None, "WebView fixture")
+            for disk, expected in disks.items():
+                self.assertEqual((saved / disk).read_bytes(), expected)
 
 
 class DomainsTest(unittest.TestCase):

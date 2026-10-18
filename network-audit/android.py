@@ -109,7 +109,8 @@ def emulator_port():
 
 class Emulator:
     def __init__(
-        self, temporary, log, proxy_port, headless, system_image, *, dimensions=None
+        self, temporary, log, proxy_port, headless, system_image, *, dimensions=None,
+        checkpoint=None, persist=False,
     ):
         self.root = Path(temporary)
         # mobilecli identifies emulators by AVD name, not their ADB serial.
@@ -120,9 +121,15 @@ class Emulator:
         self.headless = headless
         self.system_image = system_image
         self.dimensions = dimensions
+        self.checkpoint = checkpoint
+        self.persist = persist
         self.process = None
         self.port = emulator_port()
         self.serial = f"emulator-{self.port}"
+
+    @property
+    def avd_directory(self):
+        return self.root / "avd" / f"{self.name}.avd"
 
     @property
     def device_id(self):
@@ -167,6 +174,8 @@ class Emulator:
         ]
         lines.extend(f"{key}={value}" for key, value in overrides.items())
         config.write_text("\n".join(lines) + "\n")
+        if self.checkpoint:
+            self.checkpoint.restore(self.avd_directory)
         command = [
             "emulator",
             "-avd",
@@ -183,6 +192,10 @@ class Emulator:
             "-http-proxy",
             f"http://127.0.0.1:{self.proxy_port}",
         ]
+        if self.persist or self.checkpoint:
+            # Otherwise the emulator may discard its temporary cache partition
+            # at shutdown, before checkpoint conversion can read it.
+            command.extend(["-cache", str(self.avd_directory / "cache.img")])
         if self.dimensions is not None:
             # A named skin can override LCD dimensions; use a matching numeric skin.
             command.extend(
@@ -268,7 +281,7 @@ set -eu
 system=/system/etc/security/cacerts
 apex=/apex/com.android.conscrypt/cacerts
 backup=/data/local/tmp/network-audit-ca
-mkdir -m 700 "$backup"
+mkdir -p -m 700 "$backup"
 cp "$apex"/* "$backup"/
 mount -t tmpfs tmpfs "$system"
 cp "$backup"/* "$system"/
@@ -308,6 +321,32 @@ test -r "$system/{digest}.0"
         return any(
             re.search(r"\b" + re.escape(package) + r"/", line) for line in resumed
         )
+
+    def webview_version(self):
+        status = self.shell("dumpsys webviewupdate")
+        match = re.search(r"Current WebView package[^\n]*", status)
+        if not match:
+            raise RuntimeError("Could not identify the active WebView provider")
+        return match[0].strip()
+
+    def power_off(self, package):
+        """A checkpoint requires guest shutdown, never the cleanup kill fallback."""
+        if self.process is None or self.process.poll() is not None:
+            raise RuntimeError("Emulator already exited; cannot save a clean state checkpoint")
+        # Persisted disk state only: force-stop does not flush arbitrary app RAM.
+        # The stopped package also cannot run boot receivers before the next
+        # run installs its fresh CA and deliberately launches it.
+        self.adb("shell", "am", "force-stop", package)
+        self.shell("sync")
+        try:
+            self.adb("shell", "reboot", "-p", timeout=15)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # A successful guest poweroff can disconnect ADB before it replies.
+            # Only a subsequent clean emulator exit allows publication.
+            pass
+        status = self.process.wait(timeout=90)
+        if status != 0:
+            raise RuntimeError(f"Emulator poweroff exited {status}; state checkpoint not saved")
 
     def close(self):
         try:

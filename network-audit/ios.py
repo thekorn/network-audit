@@ -127,6 +127,7 @@ class Simulator:
         self.runtime, self.device_type, self.application = configuration
         self.serial = None
         self.creation_attempted = False
+        self.restored = False
 
     def simctl(self, *args, timeout=60):
         self.log.write(f"simctl {' '.join(map(str, args))}\n")
@@ -138,6 +139,14 @@ class Simulator:
         self.creation_attempted = True
         identifier = self.simctl("create", self.name, self.device_type, self.runtime)
         self.serial = str(uuid.UUID(identifier)).upper()
+
+    def clone(self, tool, source_set, serial):
+        # Recover by our unique name if native cloning times out before returning
+        # its UUID, exactly as for a failed create. The destination is the default
+        # set so existing Simulator UI and Mobilewright discovery still work.
+        self.creation_attempted = True
+        self.serial = tool.clone(source_set, None, serial, self.name)
+        self.restored = True
 
     @property
     def capture_mode(self):
@@ -164,7 +173,10 @@ class Simulator:
         self.simctl("keychain", self.serial, "add-root-cert", str(certificate))
 
     def launch(self, app, package, activity=None):
-        self.simctl("install", self.serial, str(app), timeout=180)
+        # The checkpoint already contains the exact verified app. Reinstalling
+        # it can change containers and invalidate the saved starting point.
+        if not self.restored:
+            self.simctl("install", self.serial, str(app), timeout=180)
         self.simctl("launch", self.serial, package)
 
     def is_booted(self):
@@ -173,6 +185,20 @@ class Simulator:
             device["udid"].upper() == self.serial and device["state"] == "Booted"
             for group in devices.values() for device in group
         )
+
+    def power_off(self):
+        if not self.is_booted():
+            raise RuntimeError("Simulator already stopped; cannot guarantee a clean checkpoint")
+        self.simctl("shutdown", self.serial, timeout=180)
+
+        def stopped():
+            devices = json.loads(self.simctl("list", "devices", "--json"))["devices"]
+            return any(
+                device["udid"].upper() == self.serial and device["state"] == "Shutdown"
+                for group in devices.values() for device in group
+            )
+
+        wait_for(stopped, "Simulator shutdown before checkpoint", timeout=60)
 
     def close(self):
         if not self.creation_attempted:

@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from contextlib import chdir, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
@@ -26,12 +27,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
-from ios import SimulatorRecording, app_identity, build_app, check_simulator
+from ios import Simulator, SimulatorRecording, app_identity, build_app, check_simulator
+from ios_state import Checkpoint as IOSCheckpoint, save_checkpoint as save_ios_checkpoint
+from ios_state import checkpoint_identity as ios_checkpoint_identity
 from listing import browse, scan
 from recording import ScreenRecording
 from report import generate_report, read_events
 from scenario import RUNNER, run_scenario, validate_executor
-from state import Checkpoint, save_checkpoint
+from state import Checkpoint, file_digest, save_checkpoint
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -431,7 +434,7 @@ class AuditSessionTest(unittest.TestCase):
                 if state_saved:
                     self.assertEqual(metadata["state_checkpoint"], "state")
                     self.assertTrue((session / "state").is_dir())
-                    self.assertIn(f"State: {session / 'state'}", output.getvalue().splitlines())
+                    self.assertIn(f"State: {(session / 'state').resolve()}", output.getvalue().splitlines())
                 else:
                     self.assertNotIn("state_checkpoint", metadata)
                     self.assertFalse((session / "state").exists())
@@ -691,8 +694,8 @@ class AuditSessionTest(unittest.TestCase):
                 ([str(apk), "--flavor", "staging"], "requires a Flutter project, not an APK"),
                 ([str(root), "--flavor", ""], "must be a non-blank identifier"),
                 ([str(root), "--flavor", "  "], "must be a non-blank identifier"),
-                ([str(apk), "--backend=ios", "--save-state"], "Android-only"),
-                ([str(apk), "--backend=ios", "--restore-state", str(root)], "Android-only"),
+                ([str(apk), "--backend=ios", "--save-state"], "not an IPA/APK"),
+                ([str(apk), "--backend=ios", "--restore-state", str(root)], "Cannot read a complete iOS state checkpoint"),
                 ([str(apk), "--restore-state", str(root)], "Cannot read a complete state checkpoint"),
             ]
             for path in (root / "missing.json", root, ""):
@@ -1271,18 +1274,26 @@ class IOSBackendTest(unittest.TestCase):
             "manual interrupt", "manual shutdown",
         )
         table = "dimensions = { width = 720, height = 1600, density = 240 }"
-        cases = [(outcome, "", None) for outcome in outcomes] + [
-            ("completed", table, None),
-            ("completed", 'dimensions = "big"', None),
-            ("completed", "", "big"),
-            ("completed", table, "big"),
-            ("manual shutdown", "", "big"),
+        cases = [(outcome, "", None, "") for outcome in outcomes] + [
+            ("completed", table, None, ""),
+            ("completed", 'dimensions = "big"', None, ""),
+            ("completed", "", "big", ""),
+            ("completed", table, "big", ""),
+            ("manual shutdown", "", "big", ""),
+            *((outcome, "", None, "save") for outcome in (
+                "completed", "launch", "scenario", "interrupt", "shutdown", "checkpoint clone", "checkpoint copy",
+            )),
+            ("completed", "", None, "restore"),
+            ("completed", "", None, "restore-save"),
+            ("restore clone timeout", "", None, "restore"),
         ]
-        for outcome, definition, shortcut in cases:
+        for outcome, definition, shortcut, state_mode in cases:
             with (
-                self.subTest(outcome=outcome, dimensions=definition, shortcut=shortcut),
+                self.subTest(outcome=outcome, dimensions=definition, shortcut=shortcut, state_mode=state_mode),
                 tempfile.TemporaryDirectory() as directory,
             ):
+                save_state = "save" in state_mode
+                restore_state = state_mode.startswith("restore")
                 root = Path(directory)
                 app = self.bundle(root)
                 scenario = root / "scenario.toml"
@@ -1293,8 +1304,39 @@ class IOSBackendTest(unittest.TestCase):
                 installed = {}
                 trusted = set()
                 children = []
+                clone_tool = Mock()
+                preferences = "saved app data"
+                identity = {"runtime": "runtime", "device_type": "phone"}
+
+                def clone(source_set, destination, serial, name):
+                    nonlocal preferences
+                    if destination is None:
+                        devices[owned] = "Shutdown"
+                        names[owned] = name
+                        installed[owned] = "test.ios.app"
+                        preferences = (source_set / serial / "data/preferences").read_text()
+                        if outcome == "restore clone timeout":
+                            raise subprocess.TimeoutExpired("clone", 600)
+                        return owned
+                    self.assertEqual(devices[serial], "Shutdown")
+                    if outcome == "checkpoint clone":
+                        raise RuntimeError("fixture checkpoint clone failure")
+                    data = destination / owned / "data"
+                    data.mkdir(parents=True)
+                    (data / "preferences").write_text(preferences)
+                    (data.parent / "device.plist").write_bytes(plistlib.dumps({"UDID": owned}))
+                    return owned
+
+                def copy_set(command, **_kwargs):
+                    shutil.copytree(command[-2], command[-1], symlinks=True)
+                    if outcome == "checkpoint copy":
+                        raise OSError("fixture checkpoint disk full")
+                    return ""
+
+                clone_tool.clone.side_effect = clone
 
                 def simctl(command, **_kwargs):
+                    nonlocal preferences
                     self.assertEqual(command[:2], ["xcrun", "simctl"])
                     action, *arguments = command[2:]
                     if action == "create":
@@ -1325,6 +1367,7 @@ class IOSBackendTest(unittest.TestCase):
                     elif action == "install":
                         self.assertIn(owned, trusted)
                         installed[owned] = app_identity(Path(arguments[1]))
+                        preferences = "fresh app data"
                     elif action == "launch":
                         self.assertEqual(installed[owned], arguments[1])
                     elif action == "shutdown":
@@ -1347,9 +1390,13 @@ class IOSBackendTest(unittest.TestCase):
                     return popen(command, **kwargs)
 
                 def execute(_path, *, backend, serial, device_id, package, check_running, launch_app, **_kwargs):
+                    nonlocal preferences
                     self.assertEqual((backend, serial, device_id, package), ("ios", owned, owned, "test.ios.app"))
                     check_running()
                     launch_app()
+                    if restore_state:
+                        self.assertEqual(preferences, "saved app data")
+                        preferences = "changed after restore"
                     if outcome == "scenario":
                         raise RuntimeError("fixture scenario failure")
                     if outcome == "interrupt":
@@ -1358,6 +1405,10 @@ class IOSBackendTest(unittest.TestCase):
                 with (
                     patch("cli.check_simulator", return_value=("runtime", "phone", "Simulator.app")),
                     patch("cli.check_emulator", side_effect=AssertionError("iOS must not check Android")),
+                    patch("cli.image_tool", side_effect=AssertionError("iOS must not use qemu-img")),
+                    patch("cli.ios_checkpoint_identity", return_value=identity),
+                    patch("cli.CloneTool", return_value=clone_tool),
+                    patch("ios_state.run", side_effect=copy_set),
                     patch("ios.run", side_effect=simctl),
                     patch("cli.subprocess.Popen", side_effect=start),
                     patch("cli.run_scenario", side_effect=execute),
@@ -1365,10 +1416,20 @@ class IOSBackendTest(unittest.TestCase):
                     redirect_stdout(StringIO()),
                     redirect_stderr(StringIO()) as errors,
                 ):
+                    baseline = root / "baseline"
+                    if restore_state:
+                        baseline.mkdir()
+                        devices[owned] = "Shutdown"
+                        source = Mock(serial=owned)
+                        source.name = "baseline"
+                        save_ios_checkpoint(source, baseline, identity, clone_tool)
+                        del devices[owned]
                     args = parser().parse_args([
                         str(app), "--backend=ios", "--use-fvm", "--headless",
                         *(["--domain=example.test"] if outcome.startswith("manual") else ["--scenario", str(scenario)]),
                         *(["--dimensions", shortcut] if shortcut else []),
+                        *(["--save-state"] if save_state else []),
+                        *(["--restore-state", str(baseline)] if restore_state else []),
                         "--output", str(root / "runs"),
                     ])
                     if outcome == "completed" or outcome.startswith("manual"):
@@ -1397,6 +1458,26 @@ class IOSBackendTest(unittest.TestCase):
                 if outcome == "launch and shutdown":
                     self.assertEqual(metadata["failure"], "fixture launch failure")
                     self.assertIn("device_cleanup_failure", metadata)
+                if save_state:
+                    if outcome in ("completed", "scenario", "interrupt"):
+                        self.assertEqual(metadata["state_checkpoint"], "state")
+                        checkpoint = IOSCheckpoint(session)
+                        checkpoint.validate(identity)
+                        self.assertEqual(
+                            (checkpoint.device_set / owned / "data/preferences").read_text(),
+                            "changed after restore" if restore_state else "fresh app data",
+                        )
+                    else:
+                        self.assertIn("state_failure", metadata)
+                        self.assertFalse((session / "state").exists())
+                if restore_state:
+                    self.assertEqual(metadata["restored_from"], str((baseline / "state").resolve()))
+                    original = IOSCheckpoint(baseline)
+                    original.validate(identity)
+                    self.assertEqual((original.device_set / owned / "data/preferences").read_text(), "saved app data")
+                    if not save_state:
+                        self.assertNotIn("state_checkpoint", metadata)
+                        self.assertFalse((session / "state").exists())
                 report = (session / "report.html").read_text()
                 self.assertIn("Experimental iOS Simulator", report)
                 self.assertIn("shared WebKit/system helpers are not included", report)
@@ -2450,6 +2531,209 @@ class CheckpointTest(unittest.TestCase):
                 save_checkpoint(avd, saved.parent, identity, None, "WebView fixture")
             for disk, expected in disks.items():
                 self.assertEqual((saved / disk).read_bytes(), expected)
+
+
+class IOSCheckpointTest(unittest.TestCase):
+    def test_compatibility_covers_nested_app_contents_and_runtime_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "App.app"
+            nested = app / "Frameworks/Engine.framework"
+            nested.mkdir(parents=True)
+            binary = nested / "Engine"
+            binary.write_bytes(b"first executable")
+            runtime = {"identifier": "runtime", "version": "27.0", "buildversion": "24A1"}
+
+            def command(arguments):
+                return json.dumps({"runtimes": [runtime]}) if arguments[1] == "simctl" else "Xcode fixture"
+
+            def digest(path):
+                return "framework fingerprint" if path == Path("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator") else file_digest(path)
+
+            with (
+                patch("ios_state.run", side_effect=command),
+                patch("ios_state.file_digest", side_effect=digest),
+                patch.dict(os.environ, {"DEVELOPER_DIR": str(root / "Developer")}),
+            ):
+                original = ios_checkpoint_identity(app, "test.app", ("runtime", "phone", "ui"))
+                moved = root / "Moved.app"
+                shutil.copytree(app, moved)
+                self.assertEqual(ios_checkpoint_identity(moved, "test.app", ("runtime", "phone", "ui")), original)
+                binary.write_bytes(b"other executable")
+                changed = ios_checkpoint_identity(app, "test.app", ("runtime", "phone", "ui"))
+                self.assertNotEqual(changed["app_sha256"], original["app_sha256"])
+                runtime["buildversion"] = "24A2"
+                updated = ios_checkpoint_identity(moved, "test.app", ("runtime", "phone", "ui"))
+                self.assertEqual(updated["app_sha256"], original["app_sha256"])
+                self.assertNotEqual(updated["runtime_build"], original["runtime_build"])
+                (app / "outside").symlink_to(root / "external-file")
+                with self.assertRaisesRegex(ValueError, "outside the .app"):
+                    ios_checkpoint_identity(app, "test.app", ("runtime", "phone", "ui"))
+
+    @contextmanager
+    def saved_state(self, *, delayed_metadata=False):
+        # Substitute CoreSimulator and, off macOS, ditto. These tests exercise
+        # archive IO/validation, not native Keychain or WebKit behavior.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default_set = root / "default-set"
+            serial = str(uuid.uuid4()).upper()
+            device = default_set / serial
+            data = device / "data"
+            data.mkdir(parents=True)
+            (device / "device.plist").write_bytes(plistlib.dumps({"UDID": serial}))
+            (data / "preferences").write_bytes(b"consent=accepted")
+            (data / "database").write_bytes(b"persisted rows")
+            (data / "executable").write_bytes(b"application fixture")
+            (data / "executable").chmod(0o755)
+            (data / "database-link").symlink_to("database")
+            (data / "empty").mkdir()
+            (data / "staging").mkdir(mode=0o1731)
+            (data / "staging").chmod(0o1731)
+            source = Mock(serial=serial)
+            source.name = "audit-source"
+            identity = {"package": "test.app", "app_sha256": "app", "runtime": "runtime", "device_type": "phone"}
+            tool = Mock()
+            writers = []
+
+            def clone(source_set, destination_set, source_serial, _name):
+                source_set = default_set if source_set is None else source_set
+                destination_set = default_set if destination_set is None else destination_set
+                identifier = str(uuid.uuid4()).upper()
+                shutil.copytree(source_set / source_serial, destination_set / identifier, symlinks=True)
+                metadata = destination_set / identifier / "device.plist"
+                metadata.write_bytes(plistlib.dumps({"UDID": identifier}))
+                if delayed_metadata:
+                    pending = metadata.with_suffix(".plist.sb-pending")
+                    metadata.rename(pending)
+                    writer = threading.Timer(0.1, pending.rename, args=(metadata,))
+                    writers.append(writer)
+                    writer.start()
+                # Opening a device set can write metadata even when only cloning
+                # FROM it. Accidentally opening the saved set must fail immutability.
+                (source_set / "device_set.plist").write_text("opened by CoreSimulator")
+                return identifier
+
+            def ditto(command, **_kwargs):
+                self.assertEqual(command[0], "/usr/bin/ditto")
+                if sys.platform == "darwin":
+                    subprocess.run(command, check=True, capture_output=True, timeout=30)
+                else:
+                    shutil.copytree(command[-2], command[-1], symlinks=True)
+                    # Native ditto drops the sticky bit from Simulator directories.
+                    for staging in Path(command[-1]).glob("*/data/staging"):
+                        staging.chmod(0o731)
+                return ""
+
+            tool.clone.side_effect = clone
+            session = root / "run-a"
+            session.mkdir()
+            try:
+                with patch("ios_state.run", side_effect=ditto):
+                    saved = save_ios_checkpoint(source, session, identity, tool)
+                    yield root, default_set, source, saved, identity, tool
+            finally:
+                for writer in writers:
+                    writer.cancel()
+                    writer.join()
+
+    def test_save_waits_for_cloned_device_metadata_to_be_published(self):
+        with self.saved_state(delayed_metadata=True) as (_root, _default_set, _source, saved, identity, _tool):
+            checkpoint = IOSCheckpoint(saved)
+            checkpoint.validate(identity)
+            device = checkpoint.device_set / checkpoint.serial
+            self.assertEqual(plistlib.loads((device / "device.plist").read_bytes())["UDID"], checkpoint.serial)
+            self.assertEqual(list(device.glob("device.plist.sb-*")), [])
+
+    def test_restore_survives_original_deletion_and_keeps_independent_generations(self):
+        with self.saved_state() as (root, default_set, source, saved, identity, tool):
+            shutil.rmtree(default_set / source.serial)
+            # A moved report must not require its original directory either.
+            moved = root / "moved report"
+            saved.parent.rename(moved)
+            checkpoint = IOSCheckpoint(moved)
+            checkpoint.validate(identity)
+            original_manifest = (checkpoint.path / "manifest.json").read_bytes()
+            original = checkpoint.device_set / checkpoint.serial / "data"
+            restored_ids = []
+            for number in (1, 2):
+                simulator = Simulator(f"restored-{number}", StringIO(), True, ("runtime", "phone", "ui"))
+                checkpoint.restore(simulator, tool)
+                assert simulator.serial is not None
+                restored_ids.append(simulator.serial)
+                data = default_set / simulator.serial / "data"
+                self.assertEqual((data / "preferences").read_bytes(), b"consent=accepted")
+                self.assertEqual((data / "database-link").read_bytes(), b"persisted rows")
+                self.assertEqual(os.readlink(data / "database-link"), "database")
+                self.assertEqual((data / "executable").stat().st_mode & 0o777, 0o755)
+                self.assertTrue((data / "empty").is_dir())
+                self.assertEqual((data / "staging").stat().st_mode & 0o7777, 0o1731)
+                (data / "preferences").write_bytes(b"consent=rejected")
+                self.assertEqual((original / "preferences").read_bytes(), b"consent=accepted")
+                self.assertEqual((checkpoint.path / "manifest.json").read_bytes(), original_manifest)
+                checkpoint.validate(identity)
+            self.assertEqual(len(set(restored_ids)), 2)
+            next_run = root / "run-b"
+            next_run.mkdir()
+            source.serial = restored_ids[1]
+            descendant = IOSCheckpoint(save_ios_checkpoint(source, next_run, identity, tool))
+            third = Simulator("generation-two", StringIO(), True, ("runtime", "phone", "ui"))
+            descendant.restore(third, tool)
+            assert third.serial is not None
+            self.assertEqual((default_set / third.serial / "data/preferences").read_bytes(), b"consent=rejected")
+            self.assertEqual((original / "preferences").read_bytes(), b"consent=accepted")
+            self.assertEqual(checkpoint.path.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((checkpoint.path / "manifest.json").stat().st_mode & 0o777, 0o600)
+
+    def test_rejects_corruption_links_and_incompatible_backends_before_restore(self):
+        with self.saved_state() as (root, _default_set, _source, saved, identity, tool):
+            checkpoint = IOSCheckpoint(saved)
+            for field in identity:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                    checkpoint.validate({**identity, field: "different"})
+            with self.assertRaisesRegex(ValueError, "Invalid state checkpoint manifest"):
+                Checkpoint(saved)
+            data = checkpoint.device_set / checkpoint.serial / "data"
+            simulator = Simulator("invalid", StringIO(), True, ("runtime", "phone", "ui"))
+            for change in ("bytes", "link", "mode", "sticky", "missing", "extra", "manifest"):
+                with self.subTest(change=change), tempfile.TemporaryDirectory(dir=root) as temporary:
+                    damaged = Path(temporary) / "state"
+                    shutil.copytree(saved, damaged, symlinks=True)
+                    changed_data = damaged / "device-set" / checkpoint.serial / "data"
+                    if change == "bytes":
+                        (changed_data / "preferences").write_bytes(b"consent=Accepted")
+                    elif change == "link":
+                        (changed_data / "database").unlink()
+                        (changed_data / "database").symlink_to(data / "database")
+                    elif change == "mode":
+                        (changed_data / "executable").chmod(0o644)
+                    elif change == "sticky":
+                        (changed_data / "staging").chmod(0o731)
+                    elif change == "missing":
+                        (changed_data / "database").unlink()
+                    elif change == "extra":
+                        (changed_data / "unexpected").touch()
+                    else:
+                        (damaged / "manifest.json").write_text('{"version": 1, "format": "android-cold-raw"}')
+                    with self.assertRaises(ValueError):
+                        IOSCheckpoint(damaged).restore(simulator, tool)
+                    self.assertIsNone(simulator.serial)
+
+    def test_failed_save_is_not_published_and_existing_state_is_not_replaced(self):
+        with self.saved_state() as (root, _default_set, source, saved, identity, tool):
+            with self.assertRaisesRegex(ValueError, "Refusing to replace"):
+                save_ios_checkpoint(source, saved.parent, identity, tool)
+            failed = root / "failed"
+            failed.mkdir()
+
+            def partial_copy(command, **_kwargs):
+                Path(command[-1]).mkdir()
+                raise OSError("disk full")
+
+            with patch("ios_state.run", side_effect=partial_copy), self.assertRaisesRegex(OSError, "disk full"):
+                save_ios_checkpoint(source, failed, identity, tool)
+            self.assertEqual(list(failed.iterdir()), [])
+            IOSCheckpoint(saved).validate(identity)
 
 
 class DomainsTest(unittest.TestCase):

@@ -18,6 +18,8 @@ from pathlib import Path
 from android import DIMENSION_SHORTCUTS, Emulator, apk_identity, check_emulator, wait_for
 from domains import normalize_domains, proxy_pattern
 from ios import Simulator, SimulatorRecording, app_identity, build_app, check_simulator
+from ios_state import Checkpoint as IOSCheckpoint, CloneTool
+from ios_state import checkpoint_identity as ios_checkpoint_identity, save_checkpoint as save_ios_checkpoint
 from recording import ScreenRecording
 from report import generate_report
 from scenario import load_scenario, run_scenario
@@ -85,13 +87,13 @@ def parser():
     result.add_argument(
         "--save-state",
         action="store_true",
-        help="Android: save a private cold-device checkpoint beside the report (can use several GiB)",
+        help="Save a private cold-device checkpoint beside the report (iOS experimental; can use several GiB)",
     )
     result.add_argument(
         "--restore-state",
         type=Path,
         metavar="RUN_OR_STATE_DIRECTORY",
-        help="Android: start from a copy of a previous checkpoint; requires the same APK and toolchain",
+        help="Start from a copy of a previous checkpoint; requires the same app and toolchain",
     )
     result.add_argument(
         "--headless",
@@ -156,9 +158,9 @@ def audit(args):
         raise ValueError(f"App not found: {app}")
     is_ios = args.backend == "ios"
     is_project = app.is_dir() and app.suffix != ".app"
-    if is_ios and (args.save_state or args.restore_state):
-        raise ValueError("--save-state and --restore-state are Android-only")
-    checkpoint = Checkpoint(args.restore_state) if args.restore_state else None
+    checkpoint = Checkpoint(args.restore_state) if args.restore_state and not is_ios else None
+    ios_checkpoint = IOSCheckpoint(args.restore_state) if args.restore_state and is_ios else None
+    restored = ios_checkpoint or checkpoint
     if not is_ios and (args.ios_runtime is not None or args.ios_device_type is not None):
         raise ValueError("--ios-runtime and --ios-device-type require --backend=ios")
     if is_ios and not is_project:
@@ -220,7 +222,11 @@ def audit(args):
         domains = normalize_domains(args.domain or [])
     flutter = ["fvm", "flutter"] if args.use_fvm else ["flutter"]
     # Reject Linux before dependency checks, rather than suggesting Android tools.
-    configuration = check_simulator(args.ios_runtime, args.ios_device_type) if is_ios else None
+    saved_identity = ios_checkpoint.manifest["identity"] if ios_checkpoint else {}
+    configuration = check_simulator(
+        args.ios_runtime if args.ios_runtime is not None else saved_identity.get("runtime"),
+        args.ios_device_type if args.ios_device_type is not None else saved_identity.get("device_type"),
+    ) if is_ios else None
     for tool in (
         *(("xcrun",) if is_ios else ("adb", "emulator", "avdmanager")),
         "mitmdump",
@@ -241,7 +247,7 @@ def audit(args):
                 "on an Apple Silicon Mac or x86_64 Linux KVM host."
             )
     system_image = None if is_ios else check_emulator()
-    if args.save_state:
+    if args.save_state and not is_ios:
         image_tool()
     if is_project:
         if not (app / "pubspec.lock").exists():
@@ -275,11 +281,16 @@ def audit(args):
         artifact = app
     package, activity = (app_identity(artifact), None) if is_ios else apk_identity(artifact)
     identity = None
-    if args.save_state or checkpoint:
-        identity = checkpoint_identity(artifact, package, system_image)
+    if args.save_state or restored:
+        identity = (
+            ios_checkpoint_identity(artifact, package, configuration) if is_ios else
+            checkpoint_identity(artifact, package, system_image)
+        )
     if checkpoint:
         checkpoint.validate(identity, dimensions)
         dimensions = checkpoint.manifest["dimensions"]
+    if ios_checkpoint:
+        ios_checkpoint.validate(identity)
     args.output.mkdir(parents=True, exist_ok=True)
     session = Path(
         tempfile.mkdtemp(
@@ -299,8 +310,8 @@ def audit(args):
     }
     if args.save_state:
         metadata["save_state"] = True
-    if checkpoint:
-        metadata["restored_from"] = str(checkpoint.path)
+    if restored:
+        metadata["restored_from"] = str(restored.path)
     if is_ios:
         metadata["capture_scope"] = (
             "Executable paths within the owned Simulator; "
@@ -321,15 +332,23 @@ def audit(args):
         "Sensitive data: headers and bodies are not redacted. Keep reports private.",
         flush=True,
     )
-    if args.save_state or checkpoint:
+    if args.save_state or restored:
         print(
             "State checkpoints contain whole-device private data, including credentials and "
             "data outside domain filters. Only restore trusted checkpoints. "
             "Disk state is preserved, not live screens or unsaved memory.",
             flush=True,
         )
-    if checkpoint:
-        print(f"Restoring state from: {checkpoint.path} (source remains unchanged)", flush=True)
+        if is_ios:
+            print(
+                "Experimental iOS checkpoints use private CoreSimulator cloning APIs. "
+                "Previous audit CA trust entries remain; proxy private keys are not saved. "
+                "Restored apps may retain paths to the deleted source Simulator and fail "
+                "to launch; native save/restore round trips are not yet reliable.",
+                flush=True,
+            )
+    if restored:
+        print(f"Restoring state from: {restored.path} (source remains unchanged)", flush=True)
     if args.output_har:
         print(
             "HAR enabled: intercepting all HTTP(S) hosts, including domains outside "
@@ -356,6 +375,7 @@ def audit(args):
     recording_failure = None
     cleanup_failure = None
     state_failure = None
+    clone_tool = None
     app_started = False
     try:
         with (
@@ -364,6 +384,7 @@ def audit(args):
             (session / "proxy.log").open("w") as proxy_log,
         ):
             try:
+                clone_tool = CloneTool(Path(temporary), identity) if is_ios and (args.save_state or restored) else None
                 with socket.socket() as sock:
                     sock.bind(("127.0.0.1", 0))
                     port = sock.getsockname()[1]
@@ -381,7 +402,10 @@ def audit(args):
                     )
                     metadata["ios_device_name"] = simulator.name
                     save()
-                    simulator.create()
+                    if ios_checkpoint:
+                        ios_checkpoint.restore(simulator, clone_tool)
+                    else:
+                        simulator.create()
                     metadata["device"] = simulator.serial
                     metadata["ios_runtime"] = simulator.runtime
                     metadata["ios_device_type"] = simulator.device_type
@@ -559,14 +583,19 @@ def audit(args):
                             print(recording_failure, file=sys.stderr, flush=True)
                     if args.save_state:
                         try:
-                            if not emulator or not app_started:
+                            if not app_started:
                                 raise RuntimeError("App did not start; no state checkpoint is available")
-                            print("Powering off Android and saving state checkpoint…", flush=True)
-                            webview = emulator.webview_version()
-                            emulator.power_off(package)
-                            saved = save_checkpoint(
-                                emulator.avd_directory, session, identity, dimensions, webview
-                            )
+                            if simulator:
+                                print("Shutting down iOS and saving state checkpoint…", flush=True)
+                                saved = save_ios_checkpoint(simulator, session, identity, clone_tool)
+                            else:
+                                assert emulator is not None
+                                print("Powering off Android and saving state checkpoint…", flush=True)
+                                webview = emulator.webview_version()
+                                emulator.power_off(package)
+                                saved = save_checkpoint(
+                                    emulator.avd_directory, session, identity, dimensions, webview
+                                )
                             metadata["state_checkpoint"] = saved.name
                         except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
                             state_failure = f"Could not save state checkpoint: {error}"

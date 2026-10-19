@@ -759,7 +759,8 @@ The second `--save-state` is optional. Without it, the restored working copy is
 discarded at the end, just like an ordinary run. The source checkpoint is never
 booted or modified, so several runs can start from the same baseline. Each run
 has a new report, proxy and session-only CA. Omitting both flags keeps the fresh,
-disposable-device behavior. These flags reject `--backend=ios`.
+disposable-device behavior. For `--backend=ios`, see the experimental Simulator
+checkpoint section below; the formats are not interchangeable.
 
 This saves the virtual device's persisted data: app preferences, databases,
 files and disk caches; WebView cookies, localStorage, IndexedDB and disk caches;
@@ -806,6 +807,77 @@ unless you intend to share this additional data. Proxy private keys and live CA
 mounts are not reused. Cache entries remain subject to normal expiry/eviction;
 restoring them does not guarantee identical network traffic.
 
+### Save state on iOS Simulator (experimental)
+
+The same flags are available with `--backend=ios` on macOS with full Xcode:
+
+```sh
+# Keep this exact Simulator .app bundle for subsequent runs.
+network-audit /path/to/MyApp.app --backend=ios --domain api.example.com --save-state
+network-audit /path/to/MyApp.app --backend=ios --domain api.example.com \
+  --restore-state .network-audit/runs/<previous-session> --save-state
+```
+
+**Native saving is verified; restoration is not yet reliable.** On Apple Silicon
+with macOS 27/iOS 27, saving completes and the archived files pass integrity
+checks. A restored Simulator boots, but the sample app fails to launch: its app
+registration still points to the deleted source Simulator. Do not rely on these
+checkpoints as usable restart points or as your only backup. Automated tests
+cover integrity, independent copies, generations and lifecycle failures with
+substituted CoreSimulator boundaries (and real `ditto` on macOS); they do not
+prove native app, Keychain or WebKit restoration.
+
+Saving shuts down the owned Simulator, clones it into a temporary device set,
+waits for the clone's metadata to be published, then copies that dormant set into
+`state/device-set` using macOS `ditto` to retain permissions, links, extended
+attributes and ACLs. Directory sticky bits dropped by non-root `ditto` are
+restored before integrity checking. The private `state` directory
+is published only after checking file contents, modes and link targets. The
+manifest records SHA-256 file checksums, app and toolchain identity, and the
+saved device UUID. As on Android, failures retain the report and record
+`state_failure`; no partially saved checkpoint is published.
+
+Restoring verifies and copies the archive into a temporary set before asking
+CoreSimulator to clone a new device into the default set. The archived set is
+never opened by CoreSimulator, which can change metadata even while reading.
+The restored device has its own UUID, capture session and report, and uses the
+already-installed app rather than reinstalling it. Only that working device is
+shut down/deleted; the original checkpoint is retained. A restored run can save
+its changed state as another checkpoint. Without `--save-state`, changes are
+discarded. Ordinary runs without either flag are unchanged.
+
+This requires a small bundled Objective-C helper, compiled into the run's
+temporary directory with the selected Xcode clang. It uses the private
+CoreSimulator cross-device-set clone API also used by
+[idb](https://github.com/facebook/idb/blob/main/FBSimulatorControl/Management/SimulatorSet.swift).
+Missing selectors fail rather than falling back to transplanting device folders.
+No additional dependency is downloaded, but Xcode updates can break this API.
+
+Restoration requires the same app bundle contents/modes/links, Xcode and
+CoreSimulator identity, iOS runtime version/build, device type, macOS version
+and CPU architecture. Omitted `--ios-runtime` and `--ios-device-type` inherit
+the saved values; explicit incompatible values fail. Keep a prebuilt `.app`:
+rebuilding the same source does not guarantee the same bytes. App bundles with
+symlinks pointing outside the bundle are rejected. Real iPhones,
+cross-platform restores and portability across different Macs are not supported.
+Keep the whole `state` directory on a filesystem that preserves macOS metadata;
+copying through an archive/transfer tool that drops metadata is unsupported.
+Allow several GiB for the saved set, temporary copy and working Simulator.
+
+The intended coverage is persisted app preferences, files, databases, app-group
+data, Simulator Keychain and persistent WKWebView storage. Memory-only state,
+nonpersistent/private WebViews, live screens and server state are not captured.
+Let writes finish before ending capture; shutdown cannot persist arbitrary app
+memory. This does not extend the iOS backend's WebKit network-capture coverage.
+
+**Earlier audit CA trust entries remain in the checkpoint.** Each new run adds
+a fresh session CA; proxy private keys are never included. We do not reset the
+Keychain or edit trust databases because that could destroy application data or
+unrelated trust settings. Removing the temporary private key is not certificate
+revocation and does not invalidate already-issued certificates. Use checkpoints
+only in isolated audit Simulators, not as clean trust baselines. Like Android
+checkpoints, they contain sensitive whole-device data outside domain filters.
+
 ### Session files
 
 Each run creates `.network-audit/runs/<UTC timestamp>-<unique suffix>/` with mode
@@ -840,7 +912,7 @@ with a private umask:
   diagnostics. Successful saves add `recording` to `session.json`; recording
   cleanup errors are kept separately as `recording_failure`, so an original
   audit/scenario failure is not lost.
-- `state/` (`--save-state`, Android): private cold-device disk checkpoint and
+- `state/` (`--save-state`, Android or experimental iOS): private cold-device checkpoint and
   checksummed manifest. Successful saves add `state_checkpoint` to `session.json`;
   restored runs record `restored_from`. Save failures record `state_failure`.
 - `scenario.log` (automated runs): scenario progress, assertion failures and

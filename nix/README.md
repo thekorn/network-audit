@@ -12,6 +12,14 @@ The upstream patch makes only the copied build-output frameworks writable;
 the SDK remains immutable. Passing the patch through `mkFlutter` also rebuilds
 the tool snapshot, rather than changing unused Dart source alone.
 
+`flutter-gradle-cache.patch` isolates nixpkgs' writable Flutter Gradle project
+and its Gradle/Kotlin caches by SDK store directory rather than engine revision.
+Rebuilding the SDK with different patches can keep the same engine revision;
+sharing that cache reuses symlinks to the old SDK and fails after Nix garbage
+collection removes it. The old cache is left untouched. The first Android build
+with each SDK store path creates a separate cache; no manual cache deletion is
+needed.
+
 The metadata was generated, not hand-edited, using the updater from the exact
 nixpkgs revision pinned in `devenv.lock`:
 
@@ -41,8 +49,8 @@ Run `.agents/setup`, `devenv test`, `nix flake check`, and a starter-app `flutte
 NDK and build-tools versions too. Do not mistake successful metadata generation
 for a successful application build.
 
-When the locked nixpkgs ships the desired release and includes the permission
-fix, replace the `flutter` binding in `nix/toolchain.nix` with `pkgs.flutter` and
+When the locked nixpkgs ships the desired release and includes both fixes,
+replace the `flutter` binding in `nix/toolchain.nix` with `pkgs.flutter` and
 remove the override and generated metadata. This shared expression supplies
 both devenv and the distribution flake; keep the nixpkgs revisions in
 `devenv.lock` and `flake.lock` aligned when updating the toolchain.

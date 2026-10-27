@@ -108,7 +108,7 @@ The command prints the same `Report`, `Text report`, and `Raw flows` paths. A co
 devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/browse.toml
 ```
 
-On iOS 17+, a launch-only helper routes the audited app's WKWebViews through the proxy, including their initial navigation and subresources. The app bundle and host proxy settings are unchanged; the app must permit Simulator library injection. Native BUNTE capture has been verified on iOS 27. Older runtimes retain native-only capture with a warning. This captures HTTP(S), not Android's additional WebView ad-auction observations; see [iOS capture scope and limits](network-audit/README.md#capture-scope-and-host-permissions).
+On iOS 17+, a launch-only helper routes the audited app's WKWebViews through the proxy, including their initial navigation and subresources. The app bundle and host proxy settings are unchanged; the app must permit Simulator library injection. The shared browse scenario also opts into WebView ad-auction observations on both Android and iOS, installing the observer before BUNTE loads. Older iOS runtimes retain native-only capture with a warning and cannot collect ad telemetry; see [iOS capture scope and limits](network-audit/README.md#capture-scope-and-host-permissions).
 
 ## Rebuild a report from a saved session
 

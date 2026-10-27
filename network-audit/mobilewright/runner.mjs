@@ -5,6 +5,7 @@ import { MobilecliDriver, resolveMobilecliBinary } from '@mobilewright/driver-mo
 import { NativeAndroidDriver } from './native-android-driver.mjs';
 import { NativeIOSDriver } from './native-ios-driver.mjs';
 import { captureWebViewAds } from './ad-capture.mjs';
+import { captureIOSWebViewAds } from './ios-ad-capture.mjs';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 12)) {
@@ -43,9 +44,10 @@ if (process.argv[2] === '--check') {
   let adCapture;
   let startingCapture;
   const startAds = async (options = {}) => {
-    if (backend !== 'android') throw new Error('Ad telemetry currently requires Android WebView CDP');
     if (startingCapture) throw new Error('WebView ad capture already started');
-    startingCapture = captureWebViewAds({ ...options, serial, packageName, sessionDirectory });
+    startingCapture = backend === 'ios'
+      ? captureIOSWebViewAds({ ...options, sessionDirectory, channel: process.env.NETWORK_AUDIT_IOS_AD_CHANNEL })
+      : captureWebViewAds({ ...options, serial, packageName, sessionDirectory });
     adCapture = await startingCapture;
   };
   try {

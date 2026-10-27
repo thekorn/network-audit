@@ -553,6 +553,10 @@ def audit(args):
                         check_running=check_running,
                         backend=args.backend,
                         launch_app=launch_app,
+                        ios_ad_channel=(
+                            simulator.webkit.ad_channel
+                            if simulator and simulator.webkit else None
+                        ),
                     )
                     metadata["state"] = "scenario completed"
                 else:

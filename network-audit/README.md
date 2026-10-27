@@ -187,7 +187,8 @@ loads. Persistent, nonpersistent and identifier-based stores retain their data;
 only the in-memory proxy configuration is replaced. The proxy uses HTTP CONNECT
 with direct-connection failover disabled. Requests, responses, frames, scripts
 and fetch/XHR use the same event/flow/report pipeline as native traffic. This
-does not add the Android-only ad-auction observer or WebSocket frame capture.
+does not capture WebSocket frames. Scenarios can separately opt into the
+[WebView ad observer](#webview-ad-evidence-android-and-ios).
 
 The app's source and bundle on disk are unchanged; nothing is installed into
 the shared runtime. The helper is removed after the owned Simulator stops.
@@ -712,12 +713,16 @@ The adapters reuse the run's private Mobilecli daemon and fail explicitly if
 the native JSON hierarchy is unavailable; they do not fall back to Flutter or
 hard-coded coordinate taps. Linux keeps Mobilewright's default driver.
 
-### WebView ad evidence (Android)
+### WebView ad evidence (Android and iOS)
 
 The sample's `browse.toml` also records a separate `ad-events.jsonl` ledger and
-adds an **Ad evidence** section to the offline report. This uses the app's
+adds an **Ad evidence** section to the offline report. Android uses the app's
 debuggable WebView CDP socket directly, not Mobilecli's ABI-specific helper.
-Native accessibility still handles consent. No new SDK is added to the website.
+iOS 17+ uses the launch-only WebKit helper to install a public `WKUserScript`
+at document start in the page world and receive selected observations through
+`WKScriptMessageHandlerWithReply`. Both run the same observer and write the same
+ledger format. Native accessibility still handles consent. No new SDK is added
+to the website or app bundle.
 
 Custom executors receive `captureWebViewAds` in their context. Call it once after
 creating the WebView; the runner owns final flushing and cleanup. With no options
@@ -731,10 +736,19 @@ await captureWebViewAds({ navigateTo: 'https://www.bunte.de', waitForGate: true 
 `navigateTo` requires `about:blank` and refuses to reload an already loaded site.
 `waitForGate` additionally waits for `window.__networkAuditGateReady === true`;
 the sample sets that marker after its initial blank page finishes loading. The
-sample's scenario env-file enables this Android-debug-only gate. Observer and
+sample's scenario env-file enables this gate in Android and iOS debug builds. Observer and
 binding registration finish before navigation. The helper refuses ambiguous
-multiple WebViews and never attaches to another app's process. iOS and manual
-runs do not collect this ledger automatically.
+multiple WebViews and never attaches to another app's process. Manual runs do
+not collect this ledger automatically.
+
+On iOS the runner communicates with the injected helper through a private,
+per-run temporary directory, not Safari debugging or a host-wide WebKit filter.
+Only the selected WebView's main-frame messages are accepted. Stop waits for an
+ordered message acknowledgement, drains the spool into the ledger, and removes
+the observer while preserving the app's own user scripts and message handlers.
+A lost target, failed bridge or failed flush leaves visibly partial evidence.
+This requires the same iOS 17+ Simulator library injection as WebKit HTTP capture;
+it does not support physical devices or older runtimes.
 
 The observer copies selected Prebid auction, bidder-request, response, no-bid,
 timeout, rejection, win and render fields at callback time. It keeps aliases and
@@ -757,7 +771,7 @@ server-side auctions may expose less. STF is sampled every 250 ms and at observe
 callbacks, so transient states between samples can be missed. Prebid history
 recovered after attachment is labeled backfill because retained objects may have
 mutated. Page navigation can destroy a context before its final callback reaches
-CDP. Disconnects, missing final flushes, sequence gaps and malformed records are
+the host. Disconnects, missing final flushes, sequence gaps and malformed records are
 visible, and valid earlier records remain usable after failures or interruption.
 No instrumentation is not “no bids”; a timeout is not a terminal outcome; a win
 flag is not proof of a viewable or billable impression. The report never chooses
@@ -927,7 +941,7 @@ with a private umask:
   sessions, and when regenerating reports. Empty captures show a total of zero.
 - `events.jsonl`: flushed request/response records, including failures and
   in-flight requests. A later record for the same ID replaces its earlier state.
-- `ad-events.jsonl` (opt-in Android scenarios): append-only WebView ad evidence,
+- `ad-events.jsonl` (opt-in Android/iOS scenarios): append-only WebView ad evidence,
   document/auction identity and coverage diagnostics. Included in regenerated
   HTML reports; older sessions without it show “Not collected”, not “no bids”.
 - `flows.mitm`: complete selected HTTP flows for analysis with `mitmweb -r` or

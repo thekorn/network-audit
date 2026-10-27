@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { installAdObserver } from './ad-observer.mjs';
+import { createAdLedger } from './ad-ledger.mjs';
 
 const execute = promisify(execFile);
 
@@ -73,24 +74,12 @@ export async function connectCdp(url, onEvent, onDisconnect) {
 // Low-level transport also used by the real-browser integration tests. It never
 // rewrites prior records; a killed process leaves a visibly unfinished capture.
 export async function captureAdTarget({ url, sessionDirectory, navigateTo, waitForGate = false }) {
-  const captureId = randomUUID();
-  const binding = `__networkAuditAd_${captureId.replaceAll('-', '')}`;
-  const descriptor = openSync(join(sessionDirectory, 'ad-events.jsonl'), 'a', 0o600);
-  let closed = false;
+  const ledger = createAdLedger(sessionDirectory, 'Android WebView CDP', !!navigateTo);
+  const { binding, host } = ledger;
   let disconnected = false;
   let client;
   let script;
   let stopping;
-  const write = (record) => {
-    if (closed) return;
-    writeFileSync(descriptor, JSON.stringify({
-      ...record, schemaVersion: 1, captureId, receivedAt: new Date().toISOString(),
-    }) + '\n');
-    // Ad evidence is small relative to HTTP bodies. Persist it as it arrives,
-    // not only when the scenario finishes or a WebView snapshot is requested.
-    fsyncSync(descriptor);
-  };
-  const host = (type, data) => write({ type, data, source: 'host' });
   const evaluate = async (expression) => {
     const result = await client.send('Runtime.evaluate', { expression, returnByValue: true });
     if (result.exceptionDetails) throw new Error(`Ad observer evaluation failed: ${result.exceptionDetails.exception?.description ?? result.exceptionDetails.text}`);
@@ -109,30 +98,15 @@ export async function captureAdTarget({ url, sessionDirectory, navigateTo, waitF
         host('diagnostic', { message: `Final ad flush failed: ${error.message}` });
       } finally {
         client?.close();
-        host('captureStopped', { flushed, disconnected });
-        closed = true;
-        closeSync(descriptor);
+        ledger.close({ flushed, disconnected });
       }
     })();
     return stopping;
   };
-  host('captureStarted', { transport: 'Android WebView CDP', gated: !!navigateTo });
   try {
     client = await connectCdp(url, (event) => {
       if (event.method !== 'Runtime.bindingCalled' || event.params.name !== binding) return;
-      // Page data is untrusted. Never interpret it as code or a file path.
-      let record;
-      try {
-        record = JSON.parse(event.params.payload);
-        if (!record || typeof record.type !== 'string' || !Number.isInteger(record.sequence) ||
-            typeof record.documentId !== 'string' || !record.data || typeof record.data !== 'object') {
-          throw new Error('invalid record');
-        }
-      } catch {
-        host('diagnostic', { message: 'Invalid ad binding record; evidence may be missing.' });
-        return;
-      }
-      write(record);
+      ledger.receive(event.params.payload);
     }, () => {
       disconnected = true;
       host('diagnostic', { message: 'WebView CDP disconnected; subsequent ad evidence is not captured.' });

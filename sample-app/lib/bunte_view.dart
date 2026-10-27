@@ -15,7 +15,8 @@ class _BunteViewState extends State<BunteView> {
   static final _auditGate =
       const bool.fromEnvironment('NETWORK_AUDIT_WEBVIEW_GATE') &&
       kDebugMode &&
-      defaultTargetPlatform == TargetPlatform.android;
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
   late final WebViewController _controller;
   var _progress = 0;
   String? _error;
@@ -44,7 +45,7 @@ class _BunteViewState extends State<BunteView> {
           },
           onPageFinished: (url) async {
             if (_auditGate && url == 'about:blank') {
-              // CDP must not race this initial load with its first navigation.
+              // Capture must not race this initial load with its navigation.
               await _controller.runJavaScript(
                 'window.__networkAuditGateReady = true',
               );
@@ -60,7 +61,7 @@ class _BunteViewState extends State<BunteView> {
             }
           },
           onNavigationRequest: (request) {
-            // The audit runner installs its observer before navigating via CDP.
+            // The audit runner installs its observer before navigating.
             if (_auditGate && request.url == 'about:blank') {
               return NavigationDecision.navigate;
             }

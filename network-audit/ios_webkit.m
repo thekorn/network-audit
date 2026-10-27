@@ -14,6 +14,8 @@
 static NSArray *auditProxies;
 static char configuredStore;
 
+void installAuditAds(NSString *directory);
+
 @interface WKWebViewConfiguration (NetworkAudit)
 - (WKWebsiteDataStore *)networkAudit_websiteDataStore;
 @end
@@ -55,6 +57,7 @@ __attribute__((constructor)) static void installAuditProxy(void) {
         nw_proxy_config_set_failover_allowed(proxy, false);
         auditProxies = @[proxy];
         method_exchangeImplementations(original, replacement);
+        installAuditAds(environment[@"NETWORK_AUDIT_IOS_AD_CHANNEL"]);
         [@"ready\n" writeToFile:ready atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }

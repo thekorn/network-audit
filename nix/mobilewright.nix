@@ -20,6 +20,8 @@ buildNpmPackage {
       ../network-audit/mobilewright/native-ios-driver.mjs
       ../network-audit/mobilewright/ad-capture.mjs
       ../network-audit/mobilewright/ad-observer.mjs
+      ../network-audit/mobilewright/ad-ledger.mjs
+      ../network-audit/mobilewright/ios-ad-capture.mjs
     ];
   };
   npmDepsHash = "sha256-JLrgxB8APR1wB45NQDXS5DbMmoyRQ3rDH/dIwouzfaU=";
@@ -30,7 +32,7 @@ buildNpmPackage {
     runHook preInstall
     mkdir -p "$out"
     cp runner.mjs native-android-driver.mjs native-ios-driver.mjs package.json package-lock.json "$out/"
-    cp ad-capture.mjs ad-observer.mjs "$out/"
+    cp ad-capture.mjs ad-observer.mjs ad-ledger.mjs ios-ad-capture.mjs "$out/"
     cp -R node_modules "$out/node_modules"
     runHook postInstall
   '';

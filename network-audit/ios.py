@@ -126,6 +126,8 @@ class WebKitProxy:
         self.path = directory / "ios-webkit.dylib"
         self.ready = directory / "webkit.ready"
         self.log = session / "ios-app.log"
+        self.ad_channel = directory / "ios-ads"
+        self.ad_channel.mkdir(mode=0o700)
         # Full Xcode is already required. Compile a launch-only helper, never
         # modify/resign the input bundle or change the shared redirector.
         run([
@@ -133,7 +135,8 @@ class WebKitProxy:
             "-target", f"{platform.machine()}-apple-ios17.0-simulator",
             "-fobjc-arc", "-dynamiclib", "-framework", "Foundation",
             "-framework", "WebKit", "-framework", "Network",
-            str(Path(__file__).with_name("ios_webkit.m")), "-o", str(self.path),
+            str(Path(__file__).with_name("ios_webkit.m")),
+            str(Path(__file__).with_name("ios_ads.m")), "-o", str(self.path),
         ], timeout=120)
         inherited = os.environ.get("SIMCTL_CHILD_DYLD_INSERT_LIBRARIES")
         self.environment = {
@@ -145,6 +148,7 @@ class WebKitProxy:
             "SIMCTL_CHILD_NETWORK_AUDIT_DEVICE": device,
             "SIMCTL_CHILD_NETWORK_AUDIT_BUNDLE": package,
             "SIMCTL_CHILD_NETWORK_AUDIT_WEBKIT_READY": str(self.ready),
+            "SIMCTL_CHILD_NETWORK_AUDIT_IOS_AD_CHANNEL": str(self.ad_channel),
         }
 
     def check(self):

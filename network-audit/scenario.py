@@ -98,7 +98,7 @@ def stop_group(process, grace=5):
 
 def run_scenario(
     path, *, serial, device_id, package, session, timeout, check_running,
-    backend="android", launch_app=None,
+    backend="android", launch_app=None, ios_ad_channel=None,
 ):
     deadline = time.monotonic() + timeout
     binary = subprocess.run(
@@ -115,6 +115,10 @@ def run_scenario(
         (session / "scenario.log").open("w") as log,
     ):
         env = {**os.environ, "MOBILECLI_HOME": home}
+        # Never inherit a previous audit's private bridge into a different run.
+        env.pop("NETWORK_AUDIT_IOS_AD_CHANNEL", None)
+        if backend == "ios" and ios_ad_channel is not None:
+            env["NETWORK_AUDIT_IOS_AD_CHANNEL"] = str(ios_ad_channel)
         daemon = subprocess.Popen(
             [binary, "daemon", "start", "--idle-timeout", "0"],
             env=env,

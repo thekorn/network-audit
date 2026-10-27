@@ -25,3 +25,4 @@ __pycache__/
 
 # Optional Mobilewright scenario runtime.
 node_modules/
+.idea/

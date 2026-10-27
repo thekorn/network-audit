@@ -358,8 +358,10 @@ def audit(args):
     if is_ios:
         print(
             "Experimental iOS capture: macOS may request approval for Mitmproxy Redirector. "
-            "Only executable paths within this Simulator are captured; shared WebKit/system "
-            "helpers are not included. Host proxy settings and host trust are not changed. "
+            "Native capture is scoped to executable paths within this Simulator. On iOS 17+, "
+            "a launch-only helper routes the audited app's WKWebViews through the proxy; "
+            "the app must allow Simulator library injection. Other shared system helpers "
+            "are not included. Host proxy settings and host trust are not changed. "
             "Finish with Ctrl+C or scenario completion (Home does not stop capture).",
             flush=True,
         )
@@ -410,14 +412,25 @@ def audit(args):
                     metadata["ios_runtime"] = simulator.runtime
                     metadata["ios_device_type"] = simulator.device_type
                     save()
+                    simulator.prepare_webkit(Path(temporary), port, package, session)
+                    metadata["ios_webkit_proxy"] = "starting" if simulator.webkit else "unsupported"
+                    save()
+                    if not simulator.webkit:
+                        print("Warning: WebKit capture requires iOS 17+; capturing native app traffic only.", file=sys.stderr)
+                proxy_options = ["--listen-host", "127.0.0.1", "--listen-port", str(port)]
+                if simulator:
+                    proxy_options = ["--mode", simulator.capture_mode, *proxy_options]
+                    if simulator.webkit:
+                        # A global port makes mitmproxy treat local + regular as
+                        # duplicate listeners. Only regular mode needs a socket.
+                        proxy_options = [
+                            "--mode", simulator.capture_mode,
+                            "--mode", f"regular@127.0.0.1:{port}",
+                        ]
                 proxy = subprocess.Popen(
                     [
                         "mitmdump",
-                        *(["--mode", simulator.capture_mode] if simulator else []),
-                        "--listen-host",
-                        "127.0.0.1",
-                        "--listen-port",
-                        str(port),
+                        *proxy_options,
                         "--set",
                         f"confdir={ca_dir}",
                         "--set",
@@ -489,6 +502,13 @@ def audit(args):
                     nonlocal app_started
                     device.launch(artifact, package, activity)
                     app_started = True
+                    if simulator and simulator.webkit:
+                        metadata["ios_webkit_proxy"] = "enabled"
+                        metadata["capture_scope"] = (
+                            "Executable paths within the owned Simulator plus the audited app's "
+                            "WKWebViews via a launch-only proxy helper; other shared system helpers "
+                            "and other apps' WebKit traffic are not included"
+                        )
                     if emulator:
                         foreground = emulator.foreground
                         wait_for(

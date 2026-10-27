@@ -1,8 +1,8 @@
 # network_audit_sample
 
-A Flutter sample for comparing native Dart and WebView traffic. Native UI and
-product capture have been verified on Android and iOS Simulator; shared WebKit
-helper traffic is outside the iOS backend's capture scope.
+A Flutter sample for comparing native Dart and WebView traffic. Native UI,
+product capture and BUNTE WebView HTTP(S) capture have been verified on Android
+and iOS 27 Simulator. iOS WebKit capture requires iOS 17+ and library injection.
 
 - **Products:** opening the app sends ten separate, concurrent GET requests to
   `https://dummyjson.com/products/1` through `/10`. The feed shows product images,
@@ -41,12 +41,13 @@ devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/prod
 ```
 
 Run that command from the repository root. This experimental scenario checks the
-ten product responses in both the UI and the network capture. It deliberately
-does not test BUNTE: shared WebKit helper traffic is outside the iOS backend's
-process-path capture scope. See [iOS requirements and limits](../network-audit/README.md#experimental-ios-simulator-backend).
+ten product responses in both the UI and the network capture. For BUNTE, replace
+`products-ios.toml` with `browse.toml`. On iOS 17+, the audit injects a launch-only
+helper that configures the app's WebKit proxy before navigation, without changing
+app source or the bundle. See [iOS requirements and limits](../network-audit/README.md#experimental-ios-simulator-backend).
 Builds, product capture and recording have been verified on Apple Silicon with
-iOS 27 Simulator. The shared `browse.toml` scenario also completed, including
-native-accessibility consent acceptance inside BUNTE's WebView. Its Android
+iOS 27 Simulator. The shared `browse.toml` scenario also completed with BUNTE,
+consent and advertising HTTP(S) requests in the capture. Its Android
 dimensions are ignored with a warning on iOS. The Linux runner cannot perform
 these iOS checks; a Mac with full Xcode is required.
 
@@ -60,8 +61,8 @@ before accepting consent. The helper waits for the blank page's readiness marker
 requires the blank target, and installs the CDP binding
 and document-start observer before navigating, so the observer is ready before
 the first BUNTE page JavaScript runs. The runner cleans up the capture automatically.
-This WebView audit data is Android-only; iOS retains the native-accessibility
-browsing journey and its WebKit capture limits described above.
+These ad-auction observations are Android-only; iOS uses native accessibility
+for browsing and captures WebKit HTTP(S) through its app-scoped proxy helper.
 
 `ad-events.jsonl` retains the selected ad observations independently of the HTTP
 domain filter. The report shows placement mappings, auctions, bidder observations,

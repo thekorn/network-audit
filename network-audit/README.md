@@ -2,7 +2,7 @@
 
 A Python CLI with a mitmproxy addon and Jinja2 report templates. The pinned
 Nix flake or devenv supplies Python, Jinja2, mitmproxy and OpenSSL; no pip install,
-Flutter app modification, proxy override or `badCertificateCallback` is needed.
+Flutter source modification, manual proxy setup or `badCertificateCallback` is needed.
 
 `--backend=android` is the default; existing commands keep using Android.
 `--backend=ios` selects the experimental macOS-only backend described below.
@@ -71,7 +71,8 @@ can make it differ from space that deleting the runs would free.
 
 ## Experimental iOS Simulator backend
 
-**Product capture and recording verified on Apple Silicon with iOS 27 Simulator.**
+**Product and BUNTE WebView capture verified on Apple Silicon with iOS 27 Simulator.**
+Recording has also been verified on that platform.
 Neither an Amp orb nor the Linux `thekorn-amp-runner` can build or run iOS Simulator.
 The automated Linux tests
 exercise CLI selection, platform validation, build arguments, lifecycle,
@@ -170,15 +171,43 @@ for proxy readiness. Run only one local-capture audit/tool at a time because the
 redirector is shared. The pinned Nix mitmproxy includes the official signed
 macOS helper; no new dependency was added for this backend.
 
-**This is not yet capture parity with Android.** Shared WebKit networking
-processes, system services and background URLSession helpers can run from the
-shared runtime rather than the device directory and are outside this selector.
-In particular, the sample's BUNTE WebView is not an iOS capture acceptance test.
-No broad `WebKit` selector is used because that could intercept unrelated host
-or Simulator traffic. Certificate pinning/custom trust remain unsupported.
-There is no iOS UDP/443 firewall rule: QUIC is not forced to fall back to TCP.
-The report explicitly displays these scope limits; a zero-exchange report is
-never evidence that the app made no requests.
+### WKWebView capture (iOS 17+)
+
+WebKit networking executables live in the shared runtime, outside the native
+path selector. On iOS 17+, the audit also starts a loopback-only HTTP proxy and
+uses Xcode to compile a small bundled Simulator library into the run's temporary
+directory. `simctl launch` injects it into **only the audited app**, using
+`SIMCTL_CHILD_DYLD_INSERT_LIBRARIES`. The library checks both the Simulator UUID
+and bundle ID before installing its hook, including when inherited by children.
+No broad `WebKit` selector, process polling or host proxy change is used.
+
+The helper hooks `WKWebViewConfiguration.websiteDataStore` and applies Apple's
+public `WKWebsiteDataStore.proxyConfigurations` API once per store, before page
+loads. Persistent, nonpersistent and identifier-based stores retain their data;
+only the in-memory proxy configuration is replaced. The proxy uses HTTP CONNECT
+with direct-connection failover disabled. Requests, responses, frames, scripts
+and fetch/XHR use the same event/flow/report pipeline as native traffic. This
+does not add the Android-only ad-auction observer or WebSocket frame capture.
+
+The app's source and bundle on disk are unchanged; nothing is installed into
+the shared runtime. The helper is removed after the owned Simulator stops.
+Apps must permit Simulator library injection. The audit waits for the helper's
+startup acknowledgement; a missing acknowledgement fails the run rather than
+claiming WebKit coverage. `ios-app.log` contains app stderr and injection errors,
+and may contain private app data. `session.json` records `ios_webkit_proxy` as
+`enabled` only after acknowledgement. On older runtimes the audit warns and
+retains native-only capture. Full Xcode with an iOS 17+ SDK is needed to compile
+the helper; no new toolchain dependency is downloaded.
+
+The shared `browse.toml` scenario has captured BUNTE, consent and advertising
+HTTP(S) traffic on iOS 27. This is still **not whole-Simulator capture parity**:
+other apps' WebViews, app extensions, system services and background URLSession
+helpers outside the device executable-path selector are not included. An app
+that later replaces the store's proxy configuration, bypasses this WebKit API,
+or rejects injection can prevent capture. Certificate pinning/custom trust
+remain unsupported. There is no iOS UDP/443 firewall rule; WebKit's CONNECT
+proxy uses TCP, but other clients are not forced to fall back from QUIC.
+The report displays its run's scope; missing exchanges never prove no traffic.
 
 ### Finishing, scenarios and recording
 
@@ -868,7 +897,8 @@ The intended coverage is persisted app preferences, files, databases, app-group
 data, Simulator Keychain and persistent WKWebView storage. Memory-only state,
 nonpersistent/private WebViews, live screens and server state are not captured.
 Let writes finish before ending capture; shutdown cannot persist arbitrary app
-memory. This does not extend the iOS backend's WebKit network-capture coverage.
+memory. The launch-only WebKit helper is configured afresh, not restored from
+the checkpoint.
 
 **Earlier audit CA trust entries remain in the checkpoint.** Each new run adds
 a fresh session CA; proxy private keys are never included. We do not reset the
@@ -995,6 +1025,21 @@ disconnects, truncation versus full raw flows, safe HTML, and CONNECT-to-IP with
 hostname SNI and trusted certificates (the emulator's proxy transport). Host
 preflight tests cover macOS without KVM, Linux with/without KVM, unsupported
 hosts, missing system images and unavailable hardware acceleration.
+
+On a Mac with full Xcode and an installed iOS 17+ Simulator runtime, the opt-in
+native WebKit regression test boots two disposable Simulators. It checks initial
+navigation, scripts, iframes and POST bodies in default, ephemeral, named, shared
+and decoded WebViews, with direct host and mismatched Simulator/app controls:
+
+```sh
+NETWORK_AUDIT_TEST_IOS=1 devenv shell -- python3 -m unittest discover \
+  -s network-audit/tests -p test_ios_webkit.py -v
+```
+
+This uses a local HTTP origin and the real WebKit helper/proxy, not substituted
+device calls. It is skipped by default and cannot run in an orb. For the combined
+native HTTPS + WebKit path, run the shared browse scenario with `--backend=ios`
+and check that the report includes both `dummyjson.com` and `www.bunte.de`.
 
 Native acceptance: run
 `network-audit sample-app --domain '*.bunte.de' --domain dummyjson.com`, verify ten

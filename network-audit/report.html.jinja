@@ -473,9 +473,10 @@
           <p class="mono">{{ metadata.domains|join(' · ') if metadata.domains is not none else 'All HTTP(S) requests reaching capture' }}</p>
           <p class="muted">{{ metadata.capture_scope }}.</p>
           <p class="notice">
-            Native capture is not yet verified. Missing WebKit or system-helper
-            traffic is not evidence of no requests. No certificate-pinning bypass
-            or WebSocket frame capture. Unlike Android, QUIC is not blocked.
+            Missing traffic is not evidence of no requests. WebKit coverage requires
+            the app-scoped helper (iOS 17+); other shared system helpers remain outside
+            native capture. No certificate-pinning bypass or WebSocket frame capture.
+            Unlike Android, QUIC is not globally blocked.
           </p>
           {% else %}
           {% if metadata.domains is none %}

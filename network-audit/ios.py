@@ -1,11 +1,13 @@
 """Experimental, owned iOS Simulator sessions on macOS with Xcode.
 
 Capture uses mitmproxy's macOS local mode, scoped to the new device's UUID in
-executable paths. It does not alter host proxy preferences or trust stores.
+executable paths, plus an app-scoped WebKit proxy on iOS 17+. Neither changes
+host proxy preferences or trust stores.
 """
 
 import json
 import os
+import platform
 import plistlib
 import re
 import signal
@@ -119,6 +121,41 @@ def build_app(project, flutter, flavor, define_files):
     return app
 
 
+class WebKitProxy:
+    def __init__(self, directory, port, device, package, session):
+        self.path = directory / "ios-webkit.dylib"
+        self.ready = directory / "webkit.ready"
+        self.log = session / "ios-app.log"
+        # Full Xcode is already required. Compile a launch-only helper, never
+        # modify/resign the input bundle or change the shared redirector.
+        run([
+            "xcrun", "--sdk", "iphonesimulator", "clang",
+            "-target", f"{platform.machine()}-apple-ios17.0-simulator",
+            "-fobjc-arc", "-dynamiclib", "-framework", "Foundation",
+            "-framework", "WebKit", "-framework", "Network",
+            str(Path(__file__).with_name("ios_webkit.m")), "-o", str(self.path),
+        ], timeout=120)
+        inherited = os.environ.get("SIMCTL_CHILD_DYLD_INSERT_LIBRARIES")
+        self.environment = {
+            **os.environ,
+            "SIMCTL_CHILD_DYLD_INSERT_LIBRARIES": ":".join(
+                [str(self.path), *([inherited] if inherited else [])]
+            ),
+            "SIMCTL_CHILD_NETWORK_AUDIT_PROXY_PORT": str(port),
+            "SIMCTL_CHILD_NETWORK_AUDIT_DEVICE": device,
+            "SIMCTL_CHILD_NETWORK_AUDIT_BUNDLE": package,
+            "SIMCTL_CHILD_NETWORK_AUDIT_WEBKIT_READY": str(self.ready),
+        }
+
+    def check(self):
+        wait_for(
+            lambda: self.ready.is_file() and self.ready.read_text() == "ready\n",
+            "app-scoped WebKit proxy injection; the app must allow Simulator "
+            "library injection (see ios-app.log)",
+            timeout=30,
+        )
+
+
 class Simulator:
     def __init__(self, name, log, headless, configuration):
         self.name = name
@@ -128,11 +165,12 @@ class Simulator:
         self.serial = None
         self.creation_attempted = False
         self.restored = False
+        self.webkit = None
 
-    def simctl(self, *args, timeout=60):
+    def simctl(self, *args, timeout=60, **kwargs):
         self.log.write(f"simctl {' '.join(map(str, args))}\n")
         self.log.flush()
-        return run(["xcrun", "simctl", *args], timeout=timeout)
+        return run(["xcrun", "simctl", *args], timeout=timeout, **kwargs)
 
     def create(self):
         # Never use 'booted', an existing device, or a blanket shutdown/delete.
@@ -160,6 +198,11 @@ class Simulator:
     def device_id(self):
         return self.serial
 
+    def prepare_webkit(self, directory, port, package, session):
+        version = re.search(r"\.iOS-(\d+)-", self.runtime)
+        if version and int(version[1]) >= 17:
+            self.webkit = WebKitProxy(directory, port, self.serial, package, session)
+
     def start(self):
         self.simctl("boot", self.serial, timeout=180)
         self.simctl("bootstatus", self.serial, "-b", timeout=240)
@@ -177,7 +220,14 @@ class Simulator:
         # it can change containers and invalidate the saved starting point.
         if not self.restored:
             self.simctl("install", self.serial, str(app), timeout=180)
-        self.simctl("launch", self.serial, package)
+        if self.webkit:
+            self.simctl(
+                "launch", f"--stderr={self.webkit.log}", self.serial, package,
+                env=self.webkit.environment,
+            )
+            self.webkit.check()
+        else:
+            self.simctl("launch", self.serial, package)
 
     def is_booted(self):
         devices = json.loads(self.simctl("list", "devices", "booted", "--json"))["devices"]

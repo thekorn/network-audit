@@ -102,7 +102,13 @@ devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/prod
 
 On a Mac with full Xcode and an installed iOS Simulator runtime, this boots a disposable Simulator and leaves the Android emulator off. The first run can ask you to approve Mitmproxy Redirector. The scenario waits until the capture contains HTTPS 200 responses for `/products/1` through `/products/10`, then finishes by itself.
 
-The command prints the same `Report`, `Text report`, and `Raw flows` paths. A completed run's summary lists `dummyjson.com`. A verified iOS 27 run captured exactly ten successful product GETs. The scenario stays on the product feed; shared WebKit helper traffic, including the BUNTE WebView, is outside this backend's capture scope. Use the Android browse scenario for that page.
+The command prints the same `Report`, `Text report`, and `Raw flows` paths. A completed run's summary lists `dummyjson.com`. A verified iOS 27 run captured exactly ten successful product GETs. To include BUNTE, use the shared browse scenario:
+
+```bash
+devenv shell audit sample-app --backend=ios --scenario sample-app/scenarios/browse.toml
+```
+
+On iOS 17+, a launch-only helper routes the audited app's WKWebViews through the proxy, including their initial navigation and subresources. The app bundle and host proxy settings are unchanged; the app must permit Simulator library injection. Native BUNTE capture has been verified on iOS 27. Older runtimes retain native-only capture with a warning. This captures HTTP(S), not Android's additional WebView ad-auction observations; see [iOS capture scope and limits](network-audit/README.md#capture-scope-and-host-permissions).
 
 ## Rebuild a report from a saved session
 

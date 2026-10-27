@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from android import Emulator, apk_identity, check_emulator, wait_for
 from cli import audit, parser
 from domains import matches, normalize_domains, proxy_pattern
-from ios import Simulator, SimulatorRecording, app_identity, build_app, check_simulator
+from ios import Simulator, SimulatorRecording, WebKitProxy, app_identity, build_app, check_simulator
 from ios_state import Checkpoint as IOSCheckpoint, save_checkpoint as save_ios_checkpoint
 from ios_state import checkpoint_identity as ios_checkpoint_identity
 from listing import browse, scan
@@ -1271,7 +1271,7 @@ class IOSBackendTest(unittest.TestCase):
         outcomes = (
             "completed", "create", "boot", "keychain", "install", "launch",
             "scenario", "interrupt", "proxy", "shutdown", "launch and shutdown",
-            "manual interrupt", "manual shutdown",
+            "manual interrupt", "manual shutdown", "webkit compile", "webkit injection",
         )
         table = "dimensions = { width = 720, height = 1600, density = 240 }"
         cases = [(outcome, "", None, "") for outcome in outcomes] + [
@@ -1335,10 +1335,17 @@ class IOSBackendTest(unittest.TestCase):
 
                 clone_tool.clone.side_effect = clone
 
-                def simctl(command, **_kwargs):
+                def simctl(command, **kwargs):
                     nonlocal preferences
+                    if command[:3] == ["xcrun", "--sdk", "iphonesimulator"]:
+                        if outcome == "webkit compile":
+                            raise subprocess.CalledProcessError(1, command, stderr="fixture helper compile failure")
+                        Path(command[-1]).touch()
+                        return ""
                     self.assertEqual(command[:2], ["xcrun", "simctl"])
                     action, *arguments = command[2:]
+                    if action == "launch":
+                        self.assertTrue(arguments.pop(0).startswith("--stderr="))
                     if action == "create":
                         devices[owned] = "Shutdown"
                         names[owned] = arguments[0]
@@ -1370,6 +1377,12 @@ class IOSBackendTest(unittest.TestCase):
                         preferences = "fresh app data"
                     elif action == "launch":
                         self.assertEqual(installed[owned], arguments[1])
+                        env = kwargs["env"]
+                        self.assertEqual(env["SIMCTL_CHILD_NETWORK_AUDIT_DEVICE"], owned)
+                        self.assertEqual(env["SIMCTL_CHILD_NETWORK_AUDIT_BUNDLE"], "test.ios.app")
+                        if outcome == "webkit injection":
+                            raise RuntimeError("fixture WebKit injection failure")
+                        Path(env["SIMCTL_CHILD_NETWORK_AUDIT_WEBKIT_READY"]).write_text("ready\n")
                     elif action == "shutdown":
                         devices[owned] = "Shutdown"
                     elif action == "delete":
@@ -1403,7 +1416,7 @@ class IOSBackendTest(unittest.TestCase):
                         raise KeyboardInterrupt
 
                 with (
-                    patch("cli.check_simulator", return_value=("runtime", "phone", "Simulator.app")),
+                    patch("cli.check_simulator", return_value=("com.apple.CoreSimulator.SimRuntime.iOS-27-0", "phone", "Simulator.app")),
                     patch("cli.check_emulator", side_effect=AssertionError("iOS must not check Android")),
                     patch("cli.image_tool", side_effect=AssertionError("iOS must not use qemu-img")),
                     patch("cli.ios_checkpoint_identity", return_value=identity),
@@ -1480,9 +1493,32 @@ class IOSBackendTest(unittest.TestCase):
                         self.assertFalse((session / "state").exists())
                 report = (session / "report.html").read_text()
                 self.assertIn("Experimental iOS Simulator", report)
-                self.assertIn("shared WebKit/system helpers are not included", report)
+                if metadata.get("ios_webkit_proxy") == "enabled":
+                    self.assertIn("launch-only proxy helper", report)
+                else:
+                    self.assertIn("shared WebKit/system helpers are not included", report)
                 self.assertNotIn("QUIC is blocked", report)
                 self.assertIn("Total requests: 0", (session / "report.txt").read_text())
+
+    def test_webkit_unsupported_runtime_and_missing_injection_do_not_claim_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            simulator = Simulator("test", StringIO(), True, ("com.apple.CoreSimulator.SimRuntime.iOS-16-4", "phone", "ui"))
+            with patch("ios.run", side_effect=AssertionError("Do not compile for iOS <17")):
+                simulator.prepare_webkit(root, 1234, "test.app", root)
+            self.assertIsNone(simulator.webkit)
+            with patch("ios.run"), patch.dict(os.environ, {"SIMCTL_CHILD_DYLD_INSERT_LIBRARIES": "/existing.dylib"}):
+                helper = WebKitProxy(root, 1234, "owned", "test.app", root)
+            self.assertEqual(helper.environment["SIMCTL_CHILD_DYLD_INSERT_LIBRARIES"], f"{helper.path}:/existing.dylib")
+            self.assertNotIn("SIMCTL_CHILD_NETWORK_AUDIT_DEVICE", os.environ)
+            for status in (None, "", "not ready\n"):
+                if status is not None:
+                    helper.ready.write_text(status)
+                with self.subTest(status=status), patch("android.time.monotonic", side_effect=[0, 0, 31]), patch("android.time.sleep"):
+                    with self.assertRaisesRegex(RuntimeError, "WebKit proxy injection"):
+                        helper.check()
+            helper.ready.write_text("ready\n")
+            helper.check()
 
     def test_recording_starts_before_output_and_requires_successful_finalization(self):
         popen = subprocess.Popen
